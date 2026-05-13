@@ -20,8 +20,10 @@ another device where you have explicit permission.
 The default demo target is:
 
 ```text
-/data/local/tmp/nohello
+/data/incremental/MT_data_app_vmdl192
 ```
+
+The KernelSU package defaults to deny scope for `me.garfieldhan.holmes`.
 
 You can override it at load time with the legacy single-path parameter:
 
@@ -71,6 +73,8 @@ Implemented:
 - Provides a KernelSU wrapper template for boot-time loading.
 - Provides a KernelSU WebUI for managing paths, App blacklist, direct UID
   blacklist, scope mode, `hide_dirents`, and `hide_mounts`.
+- Stores KernelSU runtime config under `/data/adb/nohello`, so WebUI edits
+  survive module updates and reinstalls.
 - Provides a `hide_dirents` fallback parameter. Set it to `0` if directory
   enumeration is unstable on a device.
 
@@ -186,8 +190,11 @@ zip, and that zip contains `nohello.ko` plus a `service.sh` script that calls
 Windows PowerShell:
 
 ```powershell
-.\tools\package_ksu.ps1 -KoPath .\kernel\nohello.ko -Output .\out\nohello-ksu.zip -TargetPath /data/local/tmp/nohello
+.\tools\package_ksu.ps1 -KoPath .\kernel\nohello.ko -Output .\out\nohello-ksu.zip
 ```
+
+By default this packages `/data/incremental/MT_data_app_vmdl192` with
+`scope_mode=deny` for `me.garfieldhan.holmes`.
 
 Pass comma-separated values to `-TargetPath` for a multi-path package:
 
@@ -207,7 +214,7 @@ Use `-ScopeMode deny` and `-DenyPackage` / `-DenyUid` for a blacklist package:
 Linux/macOS shell:
 
 ```sh
-TARGET_PATH=/data/local/tmp/nohello ./tools/package_ksu.sh kernel/nohello.ko out/nohello-ksu.zip
+./tools/package_ksu.sh kernel/nohello.ko out/nohello-ksu.zip
 ```
 
 For multiple paths:
@@ -225,7 +232,9 @@ Use `SCOPE_MODE=deny` with package names or UIDs for blacklist mode:
 SCOPE_MODE=deny DENY_PACKAGES=com.example.detector DENY_UIDS=10123 ./tools/package_ksu.sh kernel/nohello.ko out/nohello-ksu.zip
 ```
 
-Inside the KernelSU module, `target_path.conf` supports one path per line:
+Runtime config lives in `/data/adb/nohello`. On first boot, `service.sh` seeds
+that folder from the module defaults and then reads from the persistent folder.
+`target_path.conf` supports one path per line:
 
 ```text
 /data/local/tmp/a
@@ -245,7 +254,8 @@ package_wait_seconds.conf
 ```
 
 The WebUI is available from KernelSU Manager after installing the module. It
-edits these files and can reload `nohello.ko` without requiring a reboot.
+edits the persistent `/data/adb/nohello` files and can reload `nohello.ko`
+without requiring a reboot.
 
 In deny scope, `service.sh` waits for package UID resolution before loading.
 It also waits for configured paths so late-created `/dev` entries have a chance
@@ -273,7 +283,7 @@ You can also change it on the device after installation:
 
 ```sh
 su
-echo 0 > /data/adb/modules/nohello-demo/hide_dirents.conf
+echo 0 > /data/adb/nohello/hide_dirents.conf
 reboot
 ```
 

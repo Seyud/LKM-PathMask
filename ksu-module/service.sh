@@ -3,22 +3,33 @@
 MODDIR=${0%/*}
 LOG_TAG=nohello
 KO_PATH="$MODDIR/nohello.ko"
-CONFIG_PATH="$MODDIR/target_path.conf"
-HIDE_DIRENTS_CONFIG="$MODDIR/hide_dirents.conf"
-HIDE_MOUNTS_CONFIG="$MODDIR/hide_mounts.conf"
-SCOPE_MODE_CONFIG="$MODDIR/scope_mode.conf"
-DENY_UIDS_CONFIG="$MODDIR/deny_uids.conf"
-DENY_PACKAGES_CONFIG="$MODDIR/deny_packages.conf"
-TARGET_WAIT_SECONDS_CONFIG="$MODDIR/target_wait_seconds.conf"
-PACKAGE_WAIT_SECONDS_CONFIG="$MODDIR/package_wait_seconds.conf"
-DEFAULT_TARGET_PATH="/data/local/tmp/nohello"
+PERSIST_DIR="/data/adb/nohello"
+DEFAULTS_MARKER="$PERSIST_DIR/.defaults_v1_seeded"
+MOD_CONFIG_PATH="$MODDIR/target_path.conf"
+MOD_HIDE_DIRENTS_CONFIG="$MODDIR/hide_dirents.conf"
+MOD_HIDE_MOUNTS_CONFIG="$MODDIR/hide_mounts.conf"
+MOD_SCOPE_MODE_CONFIG="$MODDIR/scope_mode.conf"
+MOD_DENY_UIDS_CONFIG="$MODDIR/deny_uids.conf"
+MOD_DENY_PACKAGES_CONFIG="$MODDIR/deny_packages.conf"
+MOD_TARGET_WAIT_SECONDS_CONFIG="$MODDIR/target_wait_seconds.conf"
+MOD_PACKAGE_WAIT_SECONDS_CONFIG="$MODDIR/package_wait_seconds.conf"
+CONFIG_PATH="$PERSIST_DIR/target_path.conf"
+HIDE_DIRENTS_CONFIG="$PERSIST_DIR/hide_dirents.conf"
+HIDE_MOUNTS_CONFIG="$PERSIST_DIR/hide_mounts.conf"
+SCOPE_MODE_CONFIG="$PERSIST_DIR/scope_mode.conf"
+DENY_UIDS_CONFIG="$PERSIST_DIR/deny_uids.conf"
+DENY_PACKAGES_CONFIG="$PERSIST_DIR/deny_packages.conf"
+TARGET_WAIT_SECONDS_CONFIG="$PERSIST_DIR/target_wait_seconds.conf"
+PACKAGE_WAIT_SECONDS_CONFIG="$PERSIST_DIR/package_wait_seconds.conf"
+DEFAULT_TARGET_PATH="/data/incremental/MT_data_app_vmdl192"
+DEFAULT_DENY_PACKAGE="me.garfieldhan.holmes"
 TARGET_PATHS=""
 HIDE_DIRENTS=1
 HIDE_MOUNTS=1
-SCOPE_MODE=global
+SCOPE_MODE=deny
 DENY_UIDS=""
-TARGET_WAIT_SECONDS=60
-PACKAGE_WAIT_SECONDS=60
+TARGET_WAIT_SECONDS=90
+PACKAGE_WAIT_SECONDS=90
 UNRESOLVED_PACKAGES=0
 
 log_i() {
@@ -27,6 +38,68 @@ log_i() {
 
 log_e() {
 	log -p e -t "$LOG_TAG" "$*"
+}
+
+seed_config_file() {
+	DEST="$1"
+	SRC="$2"
+	DEFAULT_VALUE="$3"
+
+	if [ -f "$DEST" ]; then
+		return
+	fi
+
+	if [ -f "$SRC" ]; then
+		cp "$SRC" "$DEST" 2>/dev/null && return
+	fi
+
+	printf '%s\n' "$DEFAULT_VALUE" > "$DEST"
+}
+
+ensure_config_line() {
+	DEST="$1"
+	LINE="$2"
+
+	[ -n "$LINE" ] || return
+	[ -f "$DEST" ] || : > "$DEST"
+
+	if ! grep -Fxq "$LINE" "$DEST" 2>/dev/null; then
+		printf '%s\n' "$LINE" >> "$DEST"
+	fi
+}
+
+init_persistent_config() {
+	if ! mkdir -p "$PERSIST_DIR" 2>/dev/null; then
+		log_i "could not create $PERSIST_DIR, using module config"
+		CONFIG_PATH="$MOD_CONFIG_PATH"
+		HIDE_DIRENTS_CONFIG="$MOD_HIDE_DIRENTS_CONFIG"
+		HIDE_MOUNTS_CONFIG="$MOD_HIDE_MOUNTS_CONFIG"
+		SCOPE_MODE_CONFIG="$MOD_SCOPE_MODE_CONFIG"
+		DENY_UIDS_CONFIG="$MOD_DENY_UIDS_CONFIG"
+		DENY_PACKAGES_CONFIG="$MOD_DENY_PACKAGES_CONFIG"
+		TARGET_WAIT_SECONDS_CONFIG="$MOD_TARGET_WAIT_SECONDS_CONFIG"
+		PACKAGE_WAIT_SECONDS_CONFIG="$MOD_PACKAGE_WAIT_SECONDS_CONFIG"
+		return
+	fi
+
+	chmod 0700 "$PERSIST_DIR" 2>/dev/null || true
+	seed_config_file "$CONFIG_PATH" "$MOD_CONFIG_PATH" "$DEFAULT_TARGET_PATH"
+	seed_config_file "$HIDE_DIRENTS_CONFIG" "$MOD_HIDE_DIRENTS_CONFIG" "1"
+	seed_config_file "$HIDE_MOUNTS_CONFIG" "$MOD_HIDE_MOUNTS_CONFIG" "1"
+	seed_config_file "$SCOPE_MODE_CONFIG" "$MOD_SCOPE_MODE_CONFIG" "deny"
+	seed_config_file "$DENY_UIDS_CONFIG" "$MOD_DENY_UIDS_CONFIG" ""
+	seed_config_file "$DENY_PACKAGES_CONFIG" "$MOD_DENY_PACKAGES_CONFIG" "$DEFAULT_DENY_PACKAGE"
+	seed_config_file "$TARGET_WAIT_SECONDS_CONFIG" "$MOD_TARGET_WAIT_SECONDS_CONFIG" "90"
+	seed_config_file "$PACKAGE_WAIT_SECONDS_CONFIG" "$MOD_PACKAGE_WAIT_SECONDS_CONFIG" "90"
+
+	if [ ! -f "$DEFAULTS_MARKER" ]; then
+		ensure_config_line "$CONFIG_PATH" "$DEFAULT_TARGET_PATH"
+		ensure_config_line "$DENY_PACKAGES_CONFIG" "$DEFAULT_DENY_PACKAGE"
+		if [ ! -s "$SCOPE_MODE_CONFIG" ]; then
+			printf '%s\n' "deny" > "$SCOPE_MODE_CONFIG"
+		fi
+		touch "$DEFAULTS_MARKER" 2>/dev/null || true
+	fi
 }
 
 add_target_path() {
@@ -210,6 +283,8 @@ wait_for_deny_packages() {
 	read_deny_package_config 0
 }
 
+init_persistent_config
+
 if [ -f "$CONFIG_PATH" ]; then
 	while IFS= read -r CONFIG_LINE || [ -n "$CONFIG_LINE" ]; do
 		CONFIG_LINE="$(printf '%s' "$CONFIG_LINE" | tr -d '\r')"
@@ -256,13 +331,13 @@ fi
 
 case "$TARGET_WAIT_SECONDS" in
 	''|*[!0-9]*)
-		TARGET_WAIT_SECONDS=60
+		TARGET_WAIT_SECONDS=90
 		;;
 esac
 
 case "$PACKAGE_WAIT_SECONDS" in
 	''|*[!0-9]*)
-		PACKAGE_WAIT_SECONDS=60
+		PACKAGE_WAIT_SECONDS=90
 		;;
 esac
 

@@ -1,6 +1,6 @@
 id=nohello-demo
 name=NoHello Demo
-version=1.2.0
-versionCode=4
+version=1.3.0
+versionCode=5
 author=lkm-build
-description=Loads nohello.ko and manages hidden paths, proc mount text, and App blacklist through WebUI.
+description=Loads nohello.ko with persistent /data/adb config, hidden paths, proc mount text, and App blacklist WebUI.

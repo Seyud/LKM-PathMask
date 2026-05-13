@@ -1,11 +1,14 @@
 const MODDIR = "/data/adb/modules/nohello-demo";
+const CONFIGDIR = "/data/adb/nohello";
+const DEFAULT_TARGET_PATH = "/data/incremental/MT_data_app_vmdl192";
+const DEFAULT_DENY_PACKAGE = "me.garfieldhan.holmes";
 const files = {
-	targets: `${MODDIR}/target_path.conf`,
-	hideDirents: `${MODDIR}/hide_dirents.conf`,
-	hideMounts: `${MODDIR}/hide_mounts.conf`,
-	scope: `${MODDIR}/scope_mode.conf`,
-	denyPackages: `${MODDIR}/deny_packages.conf`,
-	denyUids: `${MODDIR}/deny_uids.conf`,
+	targets: `${CONFIGDIR}/target_path.conf`,
+	hideDirents: `${CONFIGDIR}/hide_dirents.conf`,
+	hideMounts: `${CONFIGDIR}/hide_mounts.conf`,
+	scope: `${CONFIGDIR}/scope_mode.conf`,
+	denyPackages: `${CONFIGDIR}/deny_packages.conf`,
+	denyUids: `${CONFIGDIR}/deny_uids.conf`,
 	service: `${MODDIR}/service.sh`,
 };
 
@@ -117,7 +120,7 @@ async function writeLines(path, lines) {
 	const body = clean.length
 		? `printf '%s\\n' ${clean.map(shellQuote).join(" ")} > ${shellQuote(path)}`
 		: `: > ${shellQuote(path)}`;
-	await execShell(`mkdir -p ${shellQuote(MODDIR)}; ${body}`);
+	await execShell(`mkdir -p ${shellQuote(CONFIGDIR)}; chmod 0700 ${shellQuote(CONFIGDIR)} 2>/dev/null || true; ${body}`);
 }
 
 function linesFromText(text) {
@@ -128,7 +131,7 @@ function linesFromText(text) {
 
 function renderPaths(paths) {
 	pathList.textContent = "";
-	const list = paths.length ? paths : ["/data/local/tmp/nohello"];
+	const list = paths.length ? paths : [DEFAULT_TARGET_PATH];
 	for (const path of list) {
 		const row = document.createElement("div");
 		row.className = "pathRow";
@@ -214,9 +217,10 @@ async function refreshConfig() {
 	renderPaths(linesFromText(targetText));
 	$("#hideDirentsInput").checked = (hideText.trim() || "1") !== "0";
 	$("#hideMountsInput").checked = (mountText.trim() || "1") !== "0";
-	const scope = (scopeText.trim() || "global") === "deny" ? "deny" : "global";
+	const scope = (scopeText.trim() || "deny") === "global" ? "global" : "deny";
 	document.querySelector(`input[name="scope"][value="${scope}"]`).checked = true;
-	selectedPackages = new Set(linesFromText(pkgText));
+	const packageLines = linesFromText(pkgText);
+	selectedPackages = new Set(packageLines.length ? packageLines : [DEFAULT_DENY_PACKAGE]);
 	$("#denyUidsInput").value = linesFromText(uidText).join("\n");
 	statusText.textContent = procText.trim() ? "Module loaded" : "Module not loaded";
 	renderApps();

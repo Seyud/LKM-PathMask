@@ -1,17 +1,17 @@
 param(
     [string]$KoPath = "kernel\nohello.ko",
     [string]$Output = "out\nohello-ksu.zip",
-    [string]$TargetPath = "/data/local/tmp/nohello",
+    [string]$TargetPath = "/data/incremental/MT_data_app_vmdl192",
     [ValidateSet("0", "1")]
     [string]$HideDirents = "1",
     [ValidateSet("0", "1")]
     [string]$HideMounts = "1",
     [ValidateSet("global", "deny")]
-    [string]$ScopeMode = "global",
-    [string]$DenyPackage = "",
+    [string]$ScopeMode = "deny",
+    [string]$DenyPackage = "me.garfieldhan.holmes",
     [string]$DenyUid = "",
-    [int]$TargetWaitSeconds = 60,
-    [int]$PackageWaitSeconds = 60
+    [int]$TargetWaitSeconds = 90,
+    [int]$PackageWaitSeconds = 90
 )
 
 $ErrorActionPreference = "Stop"
