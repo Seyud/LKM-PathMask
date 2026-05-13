@@ -41,6 +41,13 @@ Directory listing filtering can be disabled while keeping direct access hidden:
 insmod /data/local/tmp/nohello.ko target_paths=/data/local/tmp/a,/data/local/tmp/b hide_dirents=0
 ```
 
+Proc mount text filtering is enabled by default. It removes lines containing a
+target path from `/proc/*/mountinfo` and `/proc/*/mounts` read output:
+
+```sh
+insmod /data/local/tmp/nohello.ko target_paths=/data/incremental/example hide_mounts=1
+```
+
 To hide only from selected app UIDs, use deny scope:
 
 ```sh
@@ -56,12 +63,14 @@ Implemented:
 - Hides direct access through `security_inode_permission`.
 - Hides stat/getattr-style checks through `security_inode_getattr`.
 - Filters `getdents64` results so the target is removed from directory lists.
+- Filters target path lines from proc mount text reads such as
+  `/proc/self/mountinfo`.
 - Supports up to 16 configured target paths per module load.
 - Supports `scope_mode=global` and `scope_mode=deny`. Deny scope hides only
   from configured app UIDs.
 - Provides a KernelSU wrapper template for boot-time loading.
 - Provides a KernelSU WebUI for managing paths, App blacklist, direct UID
-  blacklist, scope mode, and `hide_dirents`.
+  blacklist, scope mode, `hide_dirents`, and `hide_mounts`.
 - Provides a `hide_dirents` fallback parameter. Set it to `0` if directory
   enumeration is unstable on a device.
 
@@ -80,6 +89,9 @@ Known limitations:
 - Directory-list filtering is the riskiest part of this demo because it edits
   the `getdents64` user buffer after the syscall returns. If `ls` appears to
   hang, unload the module and retry with `hide_dirents=0`.
+- Mount text filtering hooks `read()` and only edits reads from proc mount
+  files whose returned text contains a configured target path. It is intended
+  to cover path-string leaks from `/proc/*/mountinfo` and `/proc/*/mounts`.
 
 ## Build
 
@@ -184,6 +196,7 @@ Pass comma-separated values to `-TargetPath` for a multi-path package:
 ```
 
 Use `-HideDirents 0` if you want direct-access hiding only.
+Use `-HideMounts 0` if you do not want to filter proc mount text.
 
 Use `-ScopeMode deny` and `-DenyPackage` / `-DenyUid` for a blacklist package:
 
@@ -204,6 +217,7 @@ TARGET_PATHS=/data/local/tmp/a,/data/local/tmp/b ./tools/package_ksu.sh kernel/n
 ```
 
 Use `HIDE_DIRENTS=0` if you want direct-access hiding only.
+Use `HIDE_MOUNTS=0` if you do not want to filter proc mount text.
 
 Use `SCOPE_MODE=deny` with package names or UIDs for blacklist mode:
 
@@ -222,6 +236,8 @@ Blacklist config files:
 
 ```text
 scope_mode.conf       # global or deny
+hide_dirents.conf     # 1 or 0
+hide_mounts.conf      # 1 or 0
 deny_packages.conf    # one package name per line
 deny_uids.conf        # one UID per line
 target_wait_seconds.conf

@@ -2,6 +2,7 @@ const MODDIR = "/data/adb/modules/nohello-demo";
 const files = {
 	targets: `${MODDIR}/target_path.conf`,
 	hideDirents: `${MODDIR}/hide_dirents.conf`,
+	hideMounts: `${MODDIR}/hide_mounts.conf`,
 	scope: `${MODDIR}/scope_mode.conf`,
 	denyPackages: `${MODDIR}/deny_packages.conf`,
 	denyUids: `${MODDIR}/deny_uids.conf`,
@@ -204,6 +205,7 @@ async function refreshConfig() {
 	statusText.textContent = "Refreshing...";
 	const targetText = await readFile(files.targets);
 	const hideText = await readFile(files.hideDirents);
+	const mountText = await readFile(files.hideMounts);
 	const scopeText = await readFile(files.scope);
 	const pkgText = await readFile(files.denyPackages);
 	const uidText = await readFile(files.denyUids);
@@ -211,6 +213,7 @@ async function refreshConfig() {
 
 	renderPaths(linesFromText(targetText));
 	$("#hideDirentsInput").checked = (hideText.trim() || "1") !== "0";
+	$("#hideMountsInput").checked = (mountText.trim() || "1") !== "0";
 	const scope = (scopeText.trim() || "global") === "deny" ? "deny" : "global";
 	document.querySelector(`input[name="scope"][value="${scope}"]`).checked = true;
 	selectedPackages = new Set(linesFromText(pkgText));
@@ -224,6 +227,7 @@ async function saveConfig() {
 	const scope = document.querySelector('input[name="scope"]:checked')?.value || "global";
 	await writeLines(files.targets, collectPaths());
 	await writeLines(files.hideDirents, [$("#hideDirentsInput").checked ? "1" : "0"]);
+	await writeLines(files.hideMounts, [$("#hideMountsInput").checked ? "1" : "0"]);
 	await writeLines(files.scope, [scope]);
 	await writeLines(files.denyPackages, [...selectedPackages].sort());
 	await writeLines(files.denyUids, linesFromText($("#denyUidsInput").value));

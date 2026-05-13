@@ -13,7 +13,11 @@
 #include <linux/kernel.h>
 #include <linux/kprobes.h>
 #include <linux/cred.h>
+#include <linux/dcache.h>
+#include <linux/err.h>
+#include <linux/file.h>
 #include <linux/fs.h>
+#include <linux/mm.h>
 #include <linux/namei.h>
 #include <linux/version.h>
 #include <linux/dirent.h>
@@ -26,6 +30,7 @@
 #define MAX_HIDE_TARGETS 16
 #define MAX_DENY_UIDS 128
 #define TARGET_PATHS_LEN 2048
+#define TARGET_TEXT_LEN 256
 #define UID_LIST_LEN 2048
 
 enum nohello_scope_mode {
@@ -45,6 +50,10 @@ static bool hide_dirents = true;
 module_param(hide_dirents, bool, 0644);
 MODULE_PARM_DESC(hide_dirents, "Hide target from getdents64 directory listings");
 
+static bool hide_mounts = true;
+module_param(hide_mounts, bool, 0644);
+MODULE_PARM_DESC(hide_mounts, "Hide target path lines from proc mount text files");
+
 static char scope_mode[16] = "global";
 module_param_string(scope_mode, scope_mode, sizeof(scope_mode), 0644);
 MODULE_PARM_DESC(scope_mode, "Hide scope: global or deny");
@@ -57,6 +66,7 @@ MODULE_PARM_DESC(deny_uids, "Comma-separated UIDs hidden from targets");
 struct hidden_target {
 	dev_t dev;
 	unsigned long long ino;
+	char path[TARGET_TEXT_LEN];
 };
 
 static struct hidden_target targets[MAX_HIDE_TARGETS];
@@ -108,13 +118,16 @@ static inline bool is_denied_uid(uid_t uid)
 
 static inline bool should_hide_for_current(void)
 {
-	uid_t uid;
+	uid_t uid, euid, fsuid;
 
 	if (active_scope == SCOPE_GLOBAL)
 		return true;
 
-	uid = __kuid_val(current_fsuid());
-	return is_denied_uid(uid);
+	uid = __kuid_val(current_uid());
+	euid = __kuid_val(current_euid());
+	fsuid = __kuid_val(current_fsuid());
+	return is_denied_uid(uid) || is_denied_uid(euid) ||
+	       is_denied_uid(fsuid);
 }
 
 static int parse_scope_mode(void)
@@ -206,6 +219,8 @@ static int add_target_path(const char *path_name)
 	inode = d_inode(path.dentry);
 	targets[target_count].ino = inode->i_ino;
 	targets[target_count].dev = inode->i_sb->s_dev;
+	strscpy(targets[target_count].path, path_name,
+		sizeof(targets[target_count].path));
 	pr_info("nohello: target[%u] %s ino=%llu dev=%u:%u\n",
 		target_count, path_name, targets[target_count].ino,
 		MAJOR(targets[target_count].dev),
@@ -414,6 +429,173 @@ out:
 	return 0;
 }
 
+/* ---------- __arm64_sys_read mount text filtering ---------- */
+#define READ_BUF_LIMIT 262144u
+
+static struct kretprobe kp_read;
+static struct kretprobe kp_pread64;
+static bool read_registered;
+static bool pread64_registered;
+
+struct read_cb_data {
+	char __user *buf;
+	void *kbuf;
+	size_t kbuf_len;
+	bool scoped;
+};
+
+static bool buffer_contains(const char *buf, size_t len, const char *needle)
+{
+	size_t i, needle_len;
+
+	needle_len = strlen(needle);
+	if (!needle_len || len < needle_len)
+		return false;
+
+	for (i = 0; i <= len - needle_len; i++) {
+		if (!memcmp(buf + i, needle, needle_len))
+			return true;
+	}
+
+	return false;
+}
+
+static bool line_has_target_path(const char *line, size_t len)
+{
+	unsigned int i;
+
+	for (i = 0; i < target_count; i++) {
+		if (targets[i].path[0] &&
+		    buffer_contains(line, len, targets[i].path))
+			return true;
+	}
+
+	return false;
+}
+
+static size_t filter_target_lines(char *buf, size_t len)
+{
+	size_t read_pos = 0, write_pos = 0;
+
+	while (read_pos < len) {
+		size_t line_start = read_pos;
+		size_t line_len;
+
+		while (read_pos < len && buf[read_pos] != '\n')
+			read_pos++;
+		if (read_pos < len)
+			read_pos++;
+
+		line_len = read_pos - line_start;
+		if (line_has_target_path(buf + line_start, line_len))
+			continue;
+
+		if (write_pos != line_start)
+			memmove(buf + write_pos, buf + line_start, line_len);
+		write_pos += line_len;
+	}
+
+	return write_pos;
+}
+
+static bool is_proc_mount_fd(unsigned int fd)
+{
+	struct file *file;
+	char *tmp, *path;
+	bool matched = false;
+
+	file = fget(fd);
+	if (!file)
+		return false;
+
+	tmp = (char *)__get_free_page(GFP_KERNEL);
+	if (!tmp)
+		goto out;
+
+	path = d_path(&file->f_path, tmp, PAGE_SIZE);
+	if (!IS_ERR(path) &&
+	    (strstr(path, "/mountinfo") || strstr(path, "/mounts")))
+		matched = true;
+
+	free_page((unsigned long)tmp);
+
+out:
+	fput(file);
+	return matched;
+}
+
+/*
+ * Entry: __arm64_sys_read(const struct pt_regs *syscall_regs)
+ *   syscall_regs->regs[0] = fd
+ *   syscall_regs->regs[1] = user buffer
+ *   syscall_regs->regs[2] = count
+ */
+static int read_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct read_cb_data *d = (struct read_cb_data *)ri->data;
+	struct pt_regs *user_regs = (struct pt_regs *)regs->regs[0];
+	unsigned int fd;
+	size_t count;
+
+	d->buf = NULL;
+	d->kbuf = NULL;
+	d->kbuf_len = 0;
+	d->scoped = hide_mounts && should_hide_for_current();
+
+	if (!d->scoped || !user_regs)
+		return 0;
+
+	fd = (unsigned int)user_regs->regs[0];
+	if (!is_proc_mount_fd(fd))
+		return 0;
+
+	count = (size_t)user_regs->regs[2];
+	d->buf = (char __user *)user_regs->regs[1];
+	count = min(count, (size_t)READ_BUF_LIMIT);
+	if (!count)
+		return 0;
+
+	d->kbuf = kmalloc(count, GFP_KERNEL);
+	if (d->kbuf)
+		d->kbuf_len = count;
+	return 0;
+}
+
+static int read_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct read_cb_data *d = (struct read_cb_data *)ri->data;
+	long ret = regs->regs[0];
+	size_t new_len;
+
+	if (ret <= 0 || !d->scoped || !d->buf || !d->kbuf)
+		goto out;
+
+	if ((size_t)ret > d->kbuf_len) {
+		pr_debug_ratelimited("nohello: read return too large "
+				     "(%ld > %zu), skip filtering\n",
+				     ret, d->kbuf_len);
+		goto out;
+	}
+
+	if (copy_from_user(d->kbuf, d->buf, ret))
+		goto out;
+
+	new_len = filter_target_lines(d->kbuf, (size_t)ret);
+	if (new_len != (size_t)ret) {
+		if (copy_to_user(d->buf, d->kbuf, new_len))
+			pr_warn_ratelimited("nohello: mount text copy_to_user "
+					    "failed, path may leak\n");
+		else
+			regs->regs[0] = new_len;
+	}
+
+out:
+	kfree(d->kbuf);
+	d->kbuf = NULL;
+	d->kbuf_len = 0;
+	return 0;
+}
+
 /* ---------- module init / exit ---------- */
 static int __init nohello_init(void)
 {
@@ -485,9 +667,46 @@ static int __init nohello_init(void)
 			"not filtered\n");
 	}
 
+	if (hide_mounts) {
+		/* __arm64_sys_read */
+		kp_read.kp.symbol_name = "__arm64_sys_read";
+		kp_read.entry_handler = read_entry;
+		kp_read.handler = read_exit;
+		kp_read.data_size = sizeof(struct read_cb_data);
+		kp_read.maxactive = 20;
+		ret = register_kretprobe(&kp_read);
+		if (ret) {
+			pr_warn("nohello: register_kretprobe(__arm64_sys_read) "
+				"failed: %d; proc mount text may leak paths\n",
+				ret);
+		} else {
+			read_registered = true;
+			pr_info("nohello: hooked __arm64_sys_read\n");
+		}
+
+		/* __arm64_sys_pread64 */
+		kp_pread64.kp.symbol_name = "__arm64_sys_pread64";
+		kp_pread64.entry_handler = read_entry;
+		kp_pread64.handler = read_exit;
+		kp_pread64.data_size = sizeof(struct read_cb_data);
+		kp_pread64.maxactive = 20;
+		ret = register_kretprobe(&kp_pread64);
+		if (ret) {
+			pr_warn("nohello: register_kretprobe(__arm64_sys_pread64) "
+				"failed: %d; proc mount pread text may leak paths\n",
+				ret);
+		} else {
+			pread64_registered = true;
+			pr_info("nohello: hooked __arm64_sys_pread64\n");
+		}
+	} else {
+		pr_info("nohello: hide_mounts=0, proc mount text is not "
+			"filtered\n");
+	}
+
 	pr_info("nohello: loaded -- %u target(s) hidden, scope=%s, "
-		"deny_uid_count=%u\n",
-		target_count, scope_mode, deny_uid_count);
+		"deny_uid_count=%u hide_mounts=%d\n",
+		target_count, scope_mode, deny_uid_count, hide_mounts);
 	return 0;
 }
 
@@ -495,6 +714,14 @@ static void __exit nohello_exit(void)
 {
 	unregister_kretprobe(&kp_inode_perm);
 	unregister_kretprobe(&kp_inode_getattr);
+	if (read_registered) {
+		unregister_kretprobe(&kp_read);
+		read_registered = false;
+	}
+	if (pread64_registered) {
+		unregister_kretprobe(&kp_pread64);
+		pread64_registered = false;
+	}
 	if (getdents_registered) {
 		unregister_kretprobe(&kp_getdents);
 		getdents_registered = false;

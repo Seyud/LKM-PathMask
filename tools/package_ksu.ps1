@@ -4,6 +4,8 @@ param(
     [string]$TargetPath = "/data/local/tmp/nohello",
     [ValidateSet("0", "1")]
     [string]$HideDirents = "1",
+    [ValidateSet("0", "1")]
+    [string]$HideMounts = "1",
     [ValidateSet("global", "deny")]
     [string]$ScopeMode = "global",
     [string]$DenyPackage = "",
@@ -53,6 +55,7 @@ Copy-Item -Path (Join-Path $TemplateDir "*") -Destination $StageDir -Recurse -Fo
 Copy-Item -LiteralPath $KoPath -Destination (Join-Path $StageDir "nohello.ko") -Force
 Set-Content -LiteralPath (Join-Path $StageDir "target_path.conf") -Value $TargetList -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $StageDir "hide_dirents.conf") -Value $HideDirents -NoNewline -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $StageDir "hide_mounts.conf") -Value $HideMounts -NoNewline -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $StageDir "scope_mode.conf") -Value $ScopeMode -NoNewline -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $StageDir "deny_packages.conf") -Value $DenyPackageList -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $StageDir "deny_uids.conf") -Value $DenyUidList -Encoding ASCII
@@ -90,6 +93,7 @@ finally {
 Write-Host "Created KernelSU package: $Output"
 Write-Host "Target paths: $($TargetList -join ', ')"
 Write-Host "Hide dirents: $HideDirents"
+Write-Host "Hide mounts: $HideMounts"
 Write-Host "Scope mode: $ScopeMode"
 Write-Host "Deny packages: $($DenyPackageList -join ', ')"
 Write-Host "Deny UIDs: $($DenyUidList -join ', ')"

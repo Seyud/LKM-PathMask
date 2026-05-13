@@ -5,6 +5,7 @@ LOG_TAG=nohello
 KO_PATH="$MODDIR/nohello.ko"
 CONFIG_PATH="$MODDIR/target_path.conf"
 HIDE_DIRENTS_CONFIG="$MODDIR/hide_dirents.conf"
+HIDE_MOUNTS_CONFIG="$MODDIR/hide_mounts.conf"
 SCOPE_MODE_CONFIG="$MODDIR/scope_mode.conf"
 DENY_UIDS_CONFIG="$MODDIR/deny_uids.conf"
 DENY_PACKAGES_CONFIG="$MODDIR/deny_packages.conf"
@@ -13,6 +14,7 @@ PACKAGE_WAIT_SECONDS_CONFIG="$MODDIR/package_wait_seconds.conf"
 DEFAULT_TARGET_PATH="/data/local/tmp/nohello"
 TARGET_PATHS=""
 HIDE_DIRENTS=1
+HIDE_MOUNTS=1
 SCOPE_MODE=global
 DENY_UIDS=""
 TARGET_WAIT_SECONDS=60
@@ -228,6 +230,10 @@ if [ -f "$HIDE_DIRENTS_CONFIG" ]; then
 	HIDE_DIRENTS="$(head -n 1 "$HIDE_DIRENTS_CONFIG" | tr -d '\r')"
 fi
 
+if [ -f "$HIDE_MOUNTS_CONFIG" ]; then
+	HIDE_MOUNTS="$(head -n 1 "$HIDE_MOUNTS_CONFIG" | tr -d '\r')"
+fi
+
 if [ -f "$SCOPE_MODE_CONFIG" ]; then
 	SCOPE_MODE="$(head -n 1 "$SCOPE_MODE_CONFIG" | tr -d '\r ')"
 fi
@@ -278,6 +284,15 @@ case "$HIDE_DIRENTS" in
 		;;
 esac
 
+case "$HIDE_MOUNTS" in
+	0|false|False|no|No)
+		HIDE_MOUNTS=0
+		;;
+	*)
+		HIDE_MOUNTS=1
+		;;
+esac
+
 if [ -z "$TARGET_PATHS" ]; then
 	log_e "empty target path list"
 	exit 1
@@ -311,8 +326,8 @@ if grep -q '^nohello ' /proc/modules 2>/dev/null; then
 	exit 0
 fi
 
-if insmod "$KO_PATH" target_paths="$TARGET_PATHS" hide_dirents="$HIDE_DIRENTS" scope_mode="$SCOPE_MODE" deny_uids="$DENY_UIDS"; then
-	log_i "loaded $KO_PATH target_paths=$TARGET_PATHS hide_dirents=$HIDE_DIRENTS scope_mode=$SCOPE_MODE deny_uids=$DENY_UIDS"
+if insmod "$KO_PATH" target_paths="$TARGET_PATHS" hide_dirents="$HIDE_DIRENTS" hide_mounts="$HIDE_MOUNTS" scope_mode="$SCOPE_MODE" deny_uids="$DENY_UIDS"; then
+	log_i "loaded $KO_PATH target_paths=$TARGET_PATHS hide_dirents=$HIDE_DIRENTS hide_mounts=$HIDE_MOUNTS scope_mode=$SCOPE_MODE deny_uids=$DENY_UIDS"
 else
 	log_e "failed to load $KO_PATH"
 	exit 1
