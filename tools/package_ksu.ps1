@@ -1,7 +1,9 @@
 param(
     [string]$KoPath = "kernel\nohello.ko",
     [string]$Output = "out\nohello-ksu.zip",
-    [string]$TargetPath = "/data/local/tmp/nohello"
+    [string]$TargetPath = "/data/local/tmp/nohello",
+    [ValidateSet("0", "1")]
+    [string]$HideDirents = "1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,6 +38,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Output) | Out-Nul
 Copy-Item -Path (Join-Path $TemplateDir "*") -Destination $StageDir -Recurse -Force
 Copy-Item -LiteralPath $KoPath -Destination (Join-Path $StageDir "nohello.ko") -Force
 Set-Content -LiteralPath (Join-Path $StageDir "target_path.conf") -Value $TargetPath -NoNewline -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $StageDir "hide_dirents.conf") -Value $HideDirents -NoNewline -Encoding ASCII
 
 if (Test-Path -LiteralPath $Output) {
     Remove-Item -LiteralPath $Output -Force
@@ -45,4 +48,4 @@ Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $Output -Force
 
 Write-Host "Created KernelSU package: $Output"
 Write-Host "Target path: $TargetPath"
-
+Write-Host "Hide dirents: $HideDirents"

@@ -24,6 +24,10 @@ static char *target_path = "/data/local/tmp/nohello";
 module_param(target_path, charp, 0644);
 MODULE_PARM_DESC(target_path, "Absolute path to hide");
 
+static bool hide_dirents = true;
+module_param(hide_dirents, bool, 0644);
+MODULE_PARM_DESC(hide_dirents, "Hide target from getdents64 directory listings");
+
 /* system-unique target identifiers */
 static dev_t target_dev;
 static unsigned long long target_ino;
@@ -86,6 +90,7 @@ static int getattr_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 #define GETDENTS_BUF_LIMIT 65536u
 
 static struct kretprobe kp_getdents;
+static bool getdents_registered;
 
 struct getdents_cb_data {
 	struct linux_dirent64 __user *dirent;
@@ -129,11 +134,11 @@ static int getdents_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct getdents_cb_data *d = (struct getdents_cb_data *)ri->data;
 	long ret = regs->regs[0]; /* return value = bytes written */
-	struct linux_dirent64 *kbuf, *src, *dst;
-	long remain, new_len;
+	struct linux_dirent64 *kbuf, *prev, *cur;
+	long bpos, new_len;
 	const size_t hdr_off = offsetof(struct linux_dirent64, d_name);
 	const size_t min_reclen = offsetof(struct linux_dirent64, d_name) + 1;
-	bool removed = false;
+	bool modified = false;
 
 	if (ret <= 0 || !d->dirent || !d->kbuf)
 		goto out;
@@ -149,39 +154,39 @@ static int getdents_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 		goto out;
 
 	kbuf = d->kbuf;
-	src = kbuf;
-	dst = kbuf;
-	remain = ret;
+	prev = NULL;
+	bpos = 0;
+	new_len = ret;
 
-	while (remain > (long)hdr_off &&
-	       src->d_reclen >= min_reclen &&
-	       remain >= (long)src->d_reclen) {
+	while (bpos + (long)hdr_off < new_len) {
+		unsigned short reclen;
 
-		if (src->d_ino == (__u64)target_ino) {
-			long skip = src->d_reclen;
+		cur = (struct linux_dirent64 *)((char *)kbuf + bpos);
+		reclen = cur->d_reclen;
 
-			removed = true;
-			remain -= skip;
-			src = (struct linux_dirent64 *)((char *)src + skip);
+		if (reclen < min_reclen || reclen > new_len - bpos)
+			break;
+
+		if (cur->d_ino == (__u64)target_ino) {
+			modified = true;
+			if (prev) {
+				prev->d_reclen += reclen;
+				bpos += reclen;
+				continue;
+			}
+
+			new_len -= reclen;
+			if (new_len > bpos)
+				memmove(cur, (char *)cur + reclen,
+					new_len - bpos);
 			continue;
 		}
 
-		if (dst != src)
-			memmove(dst, src, src->d_reclen);
-		dst = (struct linux_dirent64 *)((char *)dst + src->d_reclen);
-		remain -= src->d_reclen;
-		src = (struct linux_dirent64 *)((char *)src + src->d_reclen);
+		prev = cur;
+		bpos += reclen;
 	}
 
-	if (removed && remain > 0) {
-		if (dst != src)
-			memmove(dst, src, remain);
-		dst = (struct linux_dirent64 *)((char *)dst + remain);
-	}
-
-	new_len = (long)((char *)dst - (char *)kbuf);
-
-	if (removed && new_len < ret) {
+	if (modified) {
 		if (copy_to_user(d->dirent, kbuf, new_len))
 			pr_warn_ratelimited("nohello: copy_to_user failed, "
 					    "directory may leak\n");
@@ -243,19 +248,26 @@ static int __init nohello_init(void)
 	}
 	pr_info("nohello: hooked security_inode_getattr\n");
 
-	/* __arm64_sys_getdents64 */
-	kp_getdents.kp.symbol_name = "__arm64_sys_getdents64";
-	kp_getdents.entry_handler = getdents_entry;
-	kp_getdents.handler = getdents_exit;
-	kp_getdents.data_size = sizeof(struct getdents_cb_data);
-	kp_getdents.maxactive = 20;
-	ret = register_kretprobe(&kp_getdents);
-	if (ret) {
-		pr_warn("nohello: register_kretprobe(__arm64_sys_getdents64) "
-			"failed: %d; file visible in listings but still "
-			"hidden from direct access\n", ret);
+	if (hide_dirents) {
+		/* __arm64_sys_getdents64 */
+		kp_getdents.kp.symbol_name = "__arm64_sys_getdents64";
+		kp_getdents.entry_handler = getdents_entry;
+		kp_getdents.handler = getdents_exit;
+		kp_getdents.data_size = sizeof(struct getdents_cb_data);
+		kp_getdents.maxactive = 20;
+		ret = register_kretprobe(&kp_getdents);
+		if (ret) {
+			pr_warn("nohello: register_kretprobe(__arm64_sys_getdents64) "
+				"failed: %d; file visible in listings but still "
+				"hidden from direct access\n",
+				ret);
+		} else {
+			getdents_registered = true;
+			pr_info("nohello: hooked __arm64_sys_getdents64\n");
+		}
 	} else {
-		pr_info("nohello: hooked __arm64_sys_getdents64\n");
+		pr_info("nohello: hide_dirents=0, directory listings are "
+			"not filtered\n");
 	}
 
 	pr_info("nohello: loaded -- %s is now hidden\n", target_path);
@@ -266,7 +278,10 @@ static void __exit nohello_exit(void)
 {
 	unregister_kretprobe(&kp_inode_perm);
 	unregister_kretprobe(&kp_inode_getattr);
-	unregister_kretprobe(&kp_getdents);
+	if (getdents_registered) {
+		unregister_kretprobe(&kp_getdents);
+		getdents_registered = false;
+	}
 
 	pr_info("nohello: unloaded -- %s is visible again\n", target_path);
 }

@@ -28,6 +28,12 @@ You can override it at load time:
 insmod /data/local/tmp/nohello.ko target_path=/data/local/tmp/nohello
 ```
 
+Directory listing filtering can be disabled while keeping direct access hidden:
+
+```sh
+insmod /data/local/tmp/nohello.ko target_path=/data/local/tmp/nohello hide_dirents=0
+```
+
 ## Current Status
 
 The project is demo-ready, but it is not a production hardening project.
@@ -38,6 +44,8 @@ Implemented:
 - Hides stat/getattr-style checks through `security_inode_getattr`.
 - Filters `getdents64` results so the target is removed from directory lists.
 - Provides a KernelSU wrapper template for boot-time loading.
+- Provides a `hide_dirents` fallback parameter. Set it to `0` if directory
+  enumeration is unstable on a device.
 
 Known limitations:
 
@@ -49,6 +57,9 @@ Known limitations:
   use both dev and inode.
 - Existing open file descriptors are not hidden retroactively.
 - The module must match the device KMI/kernel version and arm64 ABI.
+- Directory-list filtering is the riskiest part of this demo because it edits
+  the `getdents64` user buffer after the syscall returns. If `ls` appears to
+  hang, unload the module and retry with `hide_dirents=0`.
 
 ## Build
 
@@ -134,17 +145,35 @@ Windows PowerShell:
 .\tools\package_ksu.ps1 -KoPath .\kernel\nohello.ko -Output .\out\nohello-ksu.zip -TargetPath /data/local/tmp/nohello
 ```
 
+Use `-HideDirents 0` if you want direct-access hiding only.
+
 Linux/macOS shell:
 
 ```sh
 TARGET_PATH=/data/local/tmp/nohello ./tools/package_ksu.sh kernel/nohello.ko out/nohello-ksu.zip
 ```
 
+Use `HIDE_DIRENTS=0` if you want direct-access hiding only.
+
 Install `out/nohello-ksu.zip` in KernelSU Manager, reboot, then check:
 
 ```sh
 su
 dmesg | grep nohello
+```
+
+To package a safer direct-access-only build:
+
+```powershell
+.\tools\package_ksu.ps1 -KoPath .\kernel\nohello.ko -Output .\out\nohello-ksu-direct.zip -TargetPath /data/local/tmp/nohello -HideDirents 0
+```
+
+You can also change it on the device after installation:
+
+```sh
+su
+echo 0 > /data/adb/modules/nohello-demo/hide_dirents.conf
+reboot
 ```
 
 ## Use Your Own Module
@@ -165,4 +194,3 @@ mymod-y := mymod_main.o mymod_hook.o mymod_util.o
 
 Then update the KernelSU template and package scripts if your output module is
 not named `nohello.ko`.
-

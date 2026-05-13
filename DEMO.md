@@ -56,6 +56,14 @@ nohello: loaded -- /data/local/tmp/nohello is now hidden
 If the `getdents64` hook is unavailable, direct access should still be hidden,
 but the file may remain visible in directory listings.
 
+If a device hangs while listing the parent directory, unload and retry without
+directory-list filtering:
+
+```sh
+rmmod nohello
+insmod /data/local/tmp/nohello.ko target_path=/data/local/tmp/nohello hide_dirents=0
+```
+
 ## 4. Verify Hiding
 
 ```sh
@@ -91,6 +99,12 @@ Windows:
 .\tools\package_ksu.ps1 -KoPath .\kernel\nohello.ko -Output .\out\nohello-ksu.zip -TargetPath /data/local/tmp/nohello
 ```
 
+Direct-access-only fallback package:
+
+```powershell
+.\tools\package_ksu.ps1 -KoPath .\kernel\nohello.ko -Output .\out\nohello-ksu-direct.zip -TargetPath /data/local/tmp/nohello -HideDirents 0
+```
+
 Linux/macOS:
 
 ```sh
@@ -123,3 +137,8 @@ Direct access is hidden but `ls` still shows the file
 The `__arm64_sys_getdents64` probe failed to register on that kernel. Check
 `dmesg | grep nohello`.
 
+`ls /parent | grep target` does not finish
+
+Unload the module with `rmmod nohello`. Rebuild with the latest source, or load
+with `hide_dirents=0` to keep direct `ls/stat/cat` hiding while leaving parent
+directory listings unfiltered.
