@@ -18,14 +18,21 @@ Follow-up ideas:
 - Add a runtime debug log that prints the number of hidden entries removed from
   each `getdents64` buffer.
 
-## Scoped hiding / allowlist
+## Scoped hiding / blacklist
 
-Current status: hiding is global. Any process that reaches the hooked kernel
-paths sees the target as missing.
+Status: implemented for UID blacklist.
 
-Planned direction:
+Current behavior:
 
-- Add an allowlist for UIDs, process names, or both.
-- Let trusted apps or shell/root still access the file while hiding it from
-  other apps.
-- Keep the default demo behavior simple, but document the risk clearly.
+- `scope_mode=global` keeps the old behavior.
+- `scope_mode=deny` hides only from configured UIDs.
+- The KernelSU wrapper resolves package names from `deny_packages.conf` into
+  UIDs before loading the module.
+- The KernelSU WebUI can edit paths, blacklist packages, direct UIDs,
+  `scope_mode`, and `hide_dirents`.
+
+Follow-up ideas:
+
+- Add whitelist mode after blacklist testing is stable.
+- Add process-name matching as a secondary filter.
+- Add runtime config updates without unload/reload.

@@ -13,6 +13,7 @@ another device where you have explicit permission.
 - `kernel/Kbuild`: declares the external module target.
 - `kernel/Makefile`: invokes the Android/GKI kernel build tree.
 - `ksu-module/`: a minimal KernelSU module wrapper that loads `nohello.ko`.
+- `ksu-module/webroot/`: KernelSU WebUI for editing paths and App blacklist.
 - `tools/package_ksu.ps1` and `tools/package_ksu.sh`: package helpers.
 - `.github/workflows/`: GitHub Actions builds for multiple Android KMI targets.
 
@@ -40,6 +41,12 @@ Directory listing filtering can be disabled while keeping direct access hidden:
 insmod /data/local/tmp/nohello.ko target_paths=/data/local/tmp/a,/data/local/tmp/b hide_dirents=0
 ```
 
+To hide only from selected app UIDs, use deny scope:
+
+```sh
+insmod /data/local/tmp/nohello.ko target_paths=/data/local/tmp/a scope_mode=deny deny_uids=10123,10124
+```
+
 ## Current Status
 
 The project is demo-ready, but it is not a production hardening project.
@@ -50,7 +57,11 @@ Implemented:
 - Hides stat/getattr-style checks through `security_inode_getattr`.
 - Filters `getdents64` results so the target is removed from directory lists.
 - Supports up to 16 configured target paths per module load.
+- Supports `scope_mode=global` and `scope_mode=deny`. Deny scope hides only
+  from configured app UIDs.
 - Provides a KernelSU wrapper template for boot-time loading.
+- Provides a KernelSU WebUI for managing paths, App blacklist, direct UID
+  blacklist, scope mode, and `hide_dirents`.
 - Provides a `hide_dirents` fallback parameter. Set it to `0` if directory
   enumeration is unstable on a device.
 
@@ -64,6 +75,8 @@ Known limitations:
   use both dev and inode.
 - Existing open file descriptors are not hidden retroactively.
 - The module must match the device KMI/kernel version and arm64 ABI.
+- `scope_mode=deny` requires app UIDs to be resolved before module load. The
+  KernelSU service resolves package names from `deny_packages.conf`.
 - Directory-list filtering is the riskiest part of this demo because it edits
   the `getdents64` user buffer after the syscall returns. If `ls` appears to
   hang, unload the module and retry with `hide_dirents=0`.
@@ -131,6 +144,12 @@ To hide multiple paths manually:
 insmod /data/local/tmp/nohello.ko target_paths=/data/local/tmp/a,/data/local/tmp/b
 ```
 
+To hide only from one app UID:
+
+```sh
+insmod /data/local/tmp/nohello.ko target_paths=/data/local/tmp/a scope_mode=deny deny_uids=10123
+```
+
 Verify:
 
 ```sh
@@ -166,6 +185,12 @@ Pass comma-separated values to `-TargetPath` for a multi-path package:
 
 Use `-HideDirents 0` if you want direct-access hiding only.
 
+Use `-ScopeMode deny` and `-DenyPackage` / `-DenyUid` for a blacklist package:
+
+```powershell
+.\tools\package_ksu.ps1 -KoPath .\kernel\nohello.ko -Output .\out\nohello-ksu.zip -TargetPath "/system_ext/app/SoterService,/system/app/EasterEgg" -ScopeMode deny -DenyPackage "com.example.detector"
+```
+
 Linux/macOS shell:
 
 ```sh
@@ -180,12 +205,29 @@ TARGET_PATHS=/data/local/tmp/a,/data/local/tmp/b ./tools/package_ksu.sh kernel/n
 
 Use `HIDE_DIRENTS=0` if you want direct-access hiding only.
 
+Use `SCOPE_MODE=deny` with package names or UIDs for blacklist mode:
+
+```sh
+SCOPE_MODE=deny DENY_PACKAGES=com.example.detector DENY_UIDS=10123 ./tools/package_ksu.sh kernel/nohello.ko out/nohello-ksu.zip
+```
+
 Inside the KernelSU module, `target_path.conf` supports one path per line:
 
 ```text
 /data/local/tmp/a
 /data/local/tmp/b
 ```
+
+Blacklist config files:
+
+```text
+scope_mode.conf       # global or deny
+deny_packages.conf    # one package name per line
+deny_uids.conf        # one UID per line
+```
+
+The WebUI is available from KernelSU Manager after installing the module. It
+edits these files and can reload `nohello.ko` without requiring a reboot.
 
 Install `out/nohello-ksu.zip` in KernelSU Manager, reboot, then check:
 

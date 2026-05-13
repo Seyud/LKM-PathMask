@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>NoHello</title>
+	<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+	<header class="topbar">
+		<div>
+			<h1>NoHello</h1>
+			<p id="statusText">Loading...</p>
+		</div>
+		<button id="refreshBtn" type="button">Refresh</button>
+	</header>
+
+	<main>
+		<section class="panel">
+			<div class="sectionTitle">
+				<h2>Hidden Paths</h2>
+				<button id="addPathBtn" type="button">Add</button>
+			</div>
+			<div id="pathList" class="stack"></div>
+		</section>
+
+		<section class="panel">
+			<div class="sectionTitle">
+				<h2>Scope</h2>
+			</div>
+			<div class="segmented">
+				<label>
+					<input type="radio" name="scope" value="global">
+					<span>Global</span>
+				</label>
+				<label>
+					<input type="radio" name="scope" value="deny">
+					<span>Blacklist</span>
+				</label>
+			</div>
+			<label class="switchRow">
+				<span>Hide parent directory entries</span>
+				<input id="hideDirentsInput" type="checkbox">
+			</label>
+		</section>
+
+		<section class="panel">
+			<div class="sectionTitle">
+				<h2>App Blacklist</h2>
+				<div class="inlineControls">
+					<label class="miniToggle">
+						<input id="showSystemInput" type="checkbox">
+						<span>System</span>
+					</label>
+					<button id="loadAppsBtn" type="button">Load</button>
+				</div>
+			</div>
+			<input id="searchInput" class="search" type="search" placeholder="Search package name">
+			<div id="appList" class="appList"></div>
+		</section>
+
+		<section class="panel">
+			<div class="sectionTitle">
+				<h2>Direct UIDs</h2>
+			</div>
+			<textarea id="denyUidsInput" rows="4" spellcheck="false" placeholder="One UID per line"></textarea>
+		</section>
+	</main>
+
+	<footer class="actions">
+		<button id="saveBtn" type="button">Save</button>
+		<button id="reloadBtn" type="button">Save & Reload</button>
+	</footer>
+
+	<div id="toast" class="toast" hidden></div>
+	<script type="module" src="./app.js"></script>
+</body>
+</html>
+

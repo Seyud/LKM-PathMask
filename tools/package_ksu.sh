@@ -5,6 +5,9 @@ KO_PATH="${1:-kernel/nohello.ko}"
 OUTPUT="${2:-out/nohello-ksu.zip}"
 TARGET_PATHS="${TARGET_PATHS:-${TARGET_PATH:-/data/local/tmp/nohello}}"
 HIDE_DIRENTS="${HIDE_DIRENTS:-1}"
+SCOPE_MODE="${SCOPE_MODE:-global}"
+DENY_PACKAGES="${DENY_PACKAGES:-}"
+DENY_UIDS="${DENY_UIDS:-}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
@@ -43,6 +46,9 @@ cp -R "$TEMPLATE_DIR"/. "$STAGE_DIR"/
 cp "$KO_PATH" "$STAGE_DIR/nohello.ko"
 printf '%s' "$TARGET_PATHS" | tr ',' '\n' > "$STAGE_DIR/target_path.conf"
 printf '%s' "$HIDE_DIRENTS" > "$STAGE_DIR/hide_dirents.conf"
+printf '%s' "$SCOPE_MODE" > "$STAGE_DIR/scope_mode.conf"
+printf '%s' "$DENY_PACKAGES" | tr ',' '\n' > "$STAGE_DIR/deny_packages.conf"
+printf '%s' "$DENY_UIDS" | tr ',' '\n' > "$STAGE_DIR/deny_uids.conf"
 chmod 0755 "$STAGE_DIR/service.sh" "$STAGE_DIR/uninstall.sh"
 
 rm -f "$OUTPUT"
@@ -51,3 +57,6 @@ rm -f "$OUTPUT"
 echo "Created KernelSU package: $OUTPUT"
 echo "Target paths: $TARGET_PATHS"
 echo "Hide dirents: $HIDE_DIRENTS"
+echo "Scope mode: $SCOPE_MODE"
+echo "Deny packages: $DENY_PACKAGES"
+echo "Deny UIDs: $DENY_UIDS"

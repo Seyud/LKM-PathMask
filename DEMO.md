@@ -72,6 +72,12 @@ echo "demo secret b" > /data/local/tmp/nohello-b
 insmod /data/local/tmp/nohello.ko target_paths=/data/local/tmp/nohello-a,/data/local/tmp/nohello-b
 ```
 
+To hide only from selected app UIDs:
+
+```sh
+insmod /data/local/tmp/nohello.ko target_paths=/data/local/tmp/nohello-a scope_mode=deny deny_uids=10123
+```
+
 ## 4. Verify Hiding
 
 ```sh
@@ -119,6 +125,12 @@ Direct-access-only fallback package:
 .\tools\package_ksu.ps1 -KoPath .\kernel\nohello.ko -Output .\out\nohello-ksu-direct.zip -TargetPath /data/local/tmp/nohello -HideDirents 0
 ```
 
+Blacklist package:
+
+```powershell
+.\tools\package_ksu.ps1 -KoPath .\kernel\nohello.ko -Output .\out\nohello-ksu-deny.zip -TargetPath "/system_ext/app/SoterService,/system/app/EasterEgg" -ScopeMode deny -DenyPackage "com.example.detector"
+```
+
 Linux/macOS:
 
 ```sh
@@ -130,6 +142,9 @@ Multi-path package:
 ```sh
 TARGET_PATHS=/data/local/tmp/nohello-a,/data/local/tmp/nohello-b ./tools/package_ksu.sh kernel/nohello.ko out/nohello-ksu.zip
 ```
+
+After installing the KernelSU package, open its WebUI to edit paths, switch
+between global and blacklist mode, select packages, and reload the module.
 
 Install `out/nohello-ksu.zip` from KernelSU Manager and reboot. The bundled
 `service.sh` loads `nohello.ko` only when the target file already exists, which

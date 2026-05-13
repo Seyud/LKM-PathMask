@@ -5,10 +5,15 @@ LOG_TAG=nohello
 KO_PATH="$MODDIR/nohello.ko"
 CONFIG_PATH="$MODDIR/target_path.conf"
 HIDE_DIRENTS_CONFIG="$MODDIR/hide_dirents.conf"
+SCOPE_MODE_CONFIG="$MODDIR/scope_mode.conf"
+DENY_UIDS_CONFIG="$MODDIR/deny_uids.conf"
+DENY_PACKAGES_CONFIG="$MODDIR/deny_packages.conf"
 DEFAULT_TARGET_PATH="/data/local/tmp/nohello"
 TARGET_PATHS=""
 FOUND_TARGET=0
 HIDE_DIRENTS=1
+SCOPE_MODE=global
+DENY_UIDS=""
 
 log_i() {
 	log -p i -t "$LOG_TAG" "$*"
@@ -38,6 +43,87 @@ add_target_path() {
 	fi
 }
 
+add_deny_uid() {
+	CANDIDATE_UID="$1"
+
+	case "$CANDIDATE_UID" in
+		''|*[!0-9]*)
+			return
+			;;
+	esac
+
+	case ",$DENY_UIDS," in
+		*,"$CANDIDATE_UID",*)
+			return
+			;;
+	esac
+
+	if [ -z "$DENY_UIDS" ]; then
+		DENY_UIDS="$CANDIDATE_UID"
+	else
+		DENY_UIDS="$DENY_UIDS,$CANDIDATE_UID"
+	fi
+}
+
+package_to_uid() {
+	PACKAGE_NAME="$1"
+
+	(pm list packages -U "$PACKAGE_NAME" 2>/dev/null || \
+		cmd package list packages -U "$PACKAGE_NAME" 2>/dev/null) |
+	while IFS= read -r PACKAGE_LINE; do
+		LINE_PKG="${PACKAGE_LINE#package:}"
+		LINE_PKG="${LINE_PKG%% uid:*}"
+		LINE_UID="${PACKAGE_LINE##* uid:}"
+
+		if [ "$LINE_PKG" = "$PACKAGE_NAME" ] &&
+		   [ "$LINE_UID" != "$PACKAGE_LINE" ]; then
+			printf '%s\n' "$LINE_UID"
+			break
+		fi
+	done
+}
+
+read_deny_uid_config() {
+	[ -f "$DENY_UIDS_CONFIG" ] || return
+
+	while IFS= read -r CONFIG_LINE || [ -n "$CONFIG_LINE" ]; do
+		CONFIG_LINE="$(printf '%s' "$CONFIG_LINE" | tr -d '\r')"
+		case "$CONFIG_LINE" in
+			''|\#*)
+				continue
+				;;
+		esac
+		OLD_IFS="$IFS"
+		IFS=","
+		for UID_ITEM in $CONFIG_LINE; do
+			IFS="$OLD_IFS"
+			UID_ITEM="$(printf '%s' "$UID_ITEM" | tr -d ' ')"
+			add_deny_uid "$UID_ITEM"
+			IFS=","
+		done
+		IFS="$OLD_IFS"
+	done < "$DENY_UIDS_CONFIG"
+}
+
+read_deny_package_config() {
+	[ -f "$DENY_PACKAGES_CONFIG" ] || return
+
+	while IFS= read -r CONFIG_LINE || [ -n "$CONFIG_LINE" ]; do
+		CONFIG_LINE="$(printf '%s' "$CONFIG_LINE" | tr -d '\r ')"
+		case "$CONFIG_LINE" in
+			''|\#*)
+				continue
+				;;
+		esac
+		PACKAGE_UID="$(package_to_uid "$CONFIG_LINE" | head -n 1)"
+		if [ -n "$PACKAGE_UID" ]; then
+			add_deny_uid "$PACKAGE_UID"
+		else
+			log_i "could not resolve package UID: $CONFIG_LINE"
+		fi
+	done < "$DENY_PACKAGES_CONFIG"
+}
+
 if [ -f "$CONFIG_PATH" ]; then
 	while IFS= read -r CONFIG_LINE || [ -n "$CONFIG_LINE" ]; do
 		CONFIG_LINE="$(printf '%s' "$CONFIG_LINE" | tr -d '\r')"
@@ -57,6 +143,22 @@ fi
 if [ -f "$HIDE_DIRENTS_CONFIG" ]; then
 	HIDE_DIRENTS="$(head -n 1 "$HIDE_DIRENTS_CONFIG" | tr -d '\r')"
 fi
+
+if [ -f "$SCOPE_MODE_CONFIG" ]; then
+	SCOPE_MODE="$(head -n 1 "$SCOPE_MODE_CONFIG" | tr -d '\r ')"
+fi
+
+case "$SCOPE_MODE" in
+	deny|global)
+		;;
+	*)
+		log_i "unsupported scope_mode=$SCOPE_MODE, fallback to global"
+		SCOPE_MODE=global
+		;;
+esac
+
+read_deny_uid_config
+read_deny_package_config
 
 case "$HIDE_DIRENTS" in
 	0|false|False|no|No)
@@ -89,8 +191,8 @@ if [ "$FOUND_TARGET" -eq 0 ]; then
 	exit 0
 fi
 
-if insmod "$KO_PATH" target_paths="$TARGET_PATHS" hide_dirents="$HIDE_DIRENTS"; then
-	log_i "loaded $KO_PATH target_paths=$TARGET_PATHS hide_dirents=$HIDE_DIRENTS"
+if insmod "$KO_PATH" target_paths="$TARGET_PATHS" hide_dirents="$HIDE_DIRENTS" scope_mode="$SCOPE_MODE" deny_uids="$DENY_UIDS"; then
+	log_i "loaded $KO_PATH target_paths=$TARGET_PATHS hide_dirents=$HIDE_DIRENTS scope_mode=$SCOPE_MODE deny_uids=$DENY_UIDS"
 else
 	log_e "failed to load $KO_PATH"
 	exit 1

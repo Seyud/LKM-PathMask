@@ -12,17 +12,26 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/kprobes.h>
+#include <linux/cred.h>
 #include <linux/fs.h>
 #include <linux/namei.h>
 #include <linux/version.h>
 #include <linux/dirent.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/uidgid.h>
 #include <linux/uaccess.h>
 
 /* ---------- module parameter ---------- */
 #define MAX_HIDE_TARGETS 16
+#define MAX_DENY_UIDS 128
 #define TARGET_PATHS_LEN 2048
+#define UID_LIST_LEN 2048
+
+enum nohello_scope_mode {
+	SCOPE_GLOBAL = 0,
+	SCOPE_DENY,
+};
 
 static char *target_path = "/data/local/tmp/nohello";
 module_param(target_path, charp, 0644);
@@ -36,6 +45,14 @@ static bool hide_dirents = true;
 module_param(hide_dirents, bool, 0644);
 MODULE_PARM_DESC(hide_dirents, "Hide target from getdents64 directory listings");
 
+static char scope_mode[16] = "global";
+module_param_string(scope_mode, scope_mode, sizeof(scope_mode), 0644);
+MODULE_PARM_DESC(scope_mode, "Hide scope: global or deny");
+
+static char deny_uids[UID_LIST_LEN];
+module_param_string(deny_uids, deny_uids, sizeof(deny_uids), 0644);
+MODULE_PARM_DESC(deny_uids, "Comma-separated UIDs hidden from targets");
+
 /* system-unique target identifiers */
 struct hidden_target {
 	dev_t dev;
@@ -44,6 +61,9 @@ struct hidden_target {
 
 static struct hidden_target targets[MAX_HIDE_TARGETS];
 static unsigned int target_count;
+static enum nohello_scope_mode active_scope = SCOPE_GLOBAL;
+static uid_t deny_uid_list[MAX_DENY_UIDS];
+static unsigned int deny_uid_count;
 
 /* ---------- helper ---------- */
 static inline bool is_target_inode(const struct inode *inode)
@@ -72,6 +92,97 @@ static inline bool is_target_ino(__u64 ino)
 	}
 
 	return false;
+}
+
+static inline bool is_denied_uid(uid_t uid)
+{
+	unsigned int i;
+
+	for (i = 0; i < deny_uid_count; i++) {
+		if (uid == deny_uid_list[i])
+			return true;
+	}
+
+	return false;
+}
+
+static inline bool should_hide_for_current(void)
+{
+	uid_t uid;
+
+	if (active_scope == SCOPE_GLOBAL)
+		return true;
+
+	uid = __kuid_val(current_fsuid());
+	return is_denied_uid(uid);
+}
+
+static int parse_scope_mode(void)
+{
+	if (!strcmp(scope_mode, "global")) {
+		active_scope = SCOPE_GLOBAL;
+		return 0;
+	}
+
+	if (!strcmp(scope_mode, "deny")) {
+		active_scope = SCOPE_DENY;
+		return 0;
+	}
+
+	pr_err("nohello: unsupported scope_mode=%s\n", scope_mode);
+	return -EINVAL;
+}
+
+static int add_deny_uid(uid_t uid)
+{
+	if (deny_uid_count >= MAX_DENY_UIDS) {
+		pr_warn("nohello: too many deny UIDs, skip %u\n", uid);
+		return -ENOSPC;
+	}
+
+	if (is_denied_uid(uid))
+		return 0;
+
+	deny_uid_list[deny_uid_count++] = uid;
+	pr_info("nohello: deny_uid[%u]=%u\n", deny_uid_count - 1, uid);
+	return 0;
+}
+
+static int parse_deny_uids(void)
+{
+	char *buf, *cursor, *item;
+	int ret = 0;
+
+	if (!deny_uids[0])
+		return 0;
+
+	buf = kstrdup(deny_uids, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	cursor = buf;
+	while ((item = strsep(&cursor, ",")) != NULL) {
+		unsigned int uid;
+
+		item = strim(item);
+		if (!*item)
+			continue;
+
+		ret = kstrtouint(item, 10, &uid);
+		if (ret) {
+			pr_warn("nohello: invalid deny uid %s\n", item);
+			continue;
+		}
+
+		add_deny_uid((uid_t)uid);
+	}
+
+	kfree(buf);
+
+	if (active_scope == SCOPE_DENY && !deny_uid_count)
+		pr_warn("nohello: scope_mode=deny but deny_uids is empty\n");
+
+	return 0;
 }
 
 static int add_target_path(const char *path_name)
@@ -145,7 +256,7 @@ static int perm_inode_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 	struct inode_perm_data *d = (struct inode_perm_data *)ri->data;
 	struct inode *inode = (struct inode *)regs->regs[0]; /* x0 */
 
-	d->matched = is_target_inode(inode);
+	d->matched = should_hide_for_current() && is_target_inode(inode);
 	return 0;
 }
 
@@ -167,7 +278,7 @@ static int getattr_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 	struct path *path = (struct path *)regs->regs[0]; /* x0 */
 	struct inode *inode = d_inode(path->dentry);
 
-	d->matched = is_target_inode(inode);
+	d->matched = should_hide_for_current() && is_target_inode(inode);
 	return 0;
 }
 
@@ -190,6 +301,7 @@ struct getdents_cb_data {
 	struct linux_dirent64 __user *dirent;
 	void *kbuf;
 	size_t kbuf_len;
+	bool scoped;
 };
 
 /*
@@ -206,6 +318,10 @@ static int getdents_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 	d->dirent = NULL;
 	d->kbuf = NULL;
 	d->kbuf_len = 0;
+	d->scoped = should_hide_for_current();
+
+	if (!d->scoped)
+		return 0;
 
 	if (!user_regs)
 		return 0;
@@ -234,7 +350,7 @@ static int getdents_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 	const size_t min_reclen = offsetof(struct linux_dirent64, d_name) + 1;
 	bool modified = false;
 
-	if (ret <= 0 || !d->dirent || !d->kbuf)
+	if (ret <= 0 || !d->scoped || !d->dirent || !d->kbuf)
 		goto out;
 
 	if ((size_t)ret > d->kbuf_len) {
@@ -304,6 +420,14 @@ static int __init nohello_init(void)
 	const char *paths = target_paths[0] ? target_paths : target_path;
 	int ret;
 
+	ret = parse_scope_mode();
+	if (ret)
+		return ret;
+
+	ret = parse_deny_uids();
+	if (ret)
+		return ret;
+
 	ret = resolve_target_paths(paths);
 	if (ret) {
 		pr_err("nohello: no valid targets (err=%d)\n", ret);
@@ -361,7 +485,9 @@ static int __init nohello_init(void)
 			"not filtered\n");
 	}
 
-	pr_info("nohello: loaded -- %u target(s) hidden\n", target_count);
+	pr_info("nohello: loaded -- %u target(s) hidden, scope=%s, "
+		"deny_uid_count=%u\n",
+		target_count, scope_mode, deny_uid_count);
 	return 0;
 }
 

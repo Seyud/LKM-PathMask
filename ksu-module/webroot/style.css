@@ -1,0 +1,259 @@
+:root {
+	color-scheme: light dark;
+	font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	background: Canvas;
+	color: CanvasText;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	min-height: 100vh;
+	padding-bottom: 88px;
+}
+
+.topbar {
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 18px 18px 14px;
+	background: color-mix(in srgb, Canvas 88%, CanvasText 12%);
+	border-bottom: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+}
+
+h1,
+h2,
+p {
+	margin: 0;
+}
+
+h1 {
+	font-size: 22px;
+	line-height: 1.15;
+}
+
+h2 {
+	font-size: 16px;
+	line-height: 1.2;
+}
+
+#statusText {
+	margin-top: 4px;
+	font-size: 13px;
+	color: color-mix(in srgb, CanvasText 68%, transparent);
+}
+
+main {
+	display: grid;
+	gap: 14px;
+	padding: 14px;
+}
+
+.panel {
+	padding: 14px;
+	border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+	border-radius: 8px;
+	background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+}
+
+.sectionTitle {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 12px;
+}
+
+.inlineControls {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.stack {
+	display: grid;
+	gap: 8px;
+}
+
+.pathRow {
+	display: grid;
+	grid-template-columns: 1fr 44px;
+	gap: 8px;
+}
+
+input,
+textarea,
+button {
+	font: inherit;
+}
+
+input[type="text"],
+input[type="search"],
+textarea {
+	width: 100%;
+	border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+	border-radius: 6px;
+	padding: 10px 11px;
+	color: CanvasText;
+	background: Canvas;
+}
+
+textarea {
+	resize: vertical;
+	min-height: 88px;
+}
+
+button {
+	min-height: 40px;
+	border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+	border-radius: 6px;
+	padding: 0 14px;
+	color: CanvasText;
+	background: color-mix(in srgb, Canvas 88%, CanvasText 12%);
+}
+
+button:active {
+	transform: translateY(1px);
+}
+
+.segmented {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+.segmented label {
+	position: relative;
+	display: grid;
+	place-items: center;
+	min-height: 42px;
+}
+
+.segmented input {
+	position: absolute;
+	opacity: 0;
+}
+
+.segmented span {
+	width: 100%;
+	height: 100%;
+	display: grid;
+	place-items: center;
+}
+
+.segmented input:checked + span {
+	background: color-mix(in srgb, Highlight 28%, Canvas);
+	color: CanvasText;
+}
+
+.switchRow,
+.miniToggle {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-top: 12px;
+}
+
+.miniToggle {
+	margin: 0;
+	font-size: 13px;
+}
+
+.search {
+	margin-bottom: 10px;
+}
+
+.appList {
+	display: grid;
+	max-height: 390px;
+	overflow: auto;
+	border: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+	border-radius: 8px;
+}
+
+.appRow {
+	display: grid;
+	grid-template-columns: 24px 1fr auto;
+	align-items: center;
+	gap: 10px;
+	min-height: 44px;
+	padding: 8px 10px;
+	border-bottom: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
+}
+
+.appRow:last-child {
+	border-bottom: 0;
+}
+
+.pkg {
+	overflow-wrap: anywhere;
+	font-size: 14px;
+}
+
+.uid {
+	font-size: 12px;
+	color: color-mix(in srgb, CanvasText 58%, transparent);
+}
+
+.actions {
+	position: fixed;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 10px;
+	padding: 12px 14px 16px;
+	background: color-mix(in srgb, Canvas 90%, CanvasText 10%);
+	border-top: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+}
+
+.actions button:last-child {
+	background: Highlight;
+	color: HighlightText;
+	border-color: Highlight;
+}
+
+.toast {
+	position: fixed;
+	left: 14px;
+	right: 14px;
+	bottom: 86px;
+	padding: 12px 14px;
+	border-radius: 8px;
+	background: color-mix(in srgb, CanvasText 86%, Canvas);
+	color: Canvas;
+	box-shadow: 0 8px 28px rgba(0, 0, 0, .24);
+}
+
+@media (min-width: 760px) {
+	main {
+		max-width: 860px;
+		margin: 0 auto;
+	}
+
+	.topbar {
+		padding-left: max(18px, calc((100vw - 860px) / 2));
+		padding-right: max(18px, calc((100vw - 860px) / 2));
+	}
+
+	.actions {
+		left: 50%;
+		width: min(860px, calc(100vw - 28px));
+		transform: translateX(-50%);
+		border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+		border-bottom: 0;
+		border-radius: 8px 8px 0 0;
+	}
+}
+

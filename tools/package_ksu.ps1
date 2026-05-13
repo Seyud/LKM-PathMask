@@ -3,7 +3,11 @@ param(
     [string]$Output = "out\nohello-ksu.zip",
     [string]$TargetPath = "/data/local/tmp/nohello",
     [ValidateSet("0", "1")]
-    [string]$HideDirents = "1"
+    [string]$HideDirents = "1",
+    [ValidateSet("global", "deny")]
+    [string]$ScopeMode = "global",
+    [string]$DenyPackage = "",
+    [string]$DenyUid = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +37,9 @@ if (-not $TargetList) {
     throw "No target paths were provided"
 }
 
+$DenyPackageList = $DenyPackage -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+$DenyUidList = $DenyUid -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
 if (Test-Path -LiteralPath $StageDir) {
     Remove-Item -LiteralPath $StageDir -Recurse -Force
 }
@@ -44,6 +51,9 @@ Copy-Item -Path (Join-Path $TemplateDir "*") -Destination $StageDir -Recurse -Fo
 Copy-Item -LiteralPath $KoPath -Destination (Join-Path $StageDir "nohello.ko") -Force
 Set-Content -LiteralPath (Join-Path $StageDir "target_path.conf") -Value $TargetList -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $StageDir "hide_dirents.conf") -Value $HideDirents -NoNewline -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $StageDir "scope_mode.conf") -Value $ScopeMode -NoNewline -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $StageDir "deny_packages.conf") -Value $DenyPackageList -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $StageDir "deny_uids.conf") -Value $DenyUidList -Encoding ASCII
 
 if (Test-Path -LiteralPath $Output) {
     Remove-Item -LiteralPath $Output -Force
@@ -54,3 +64,6 @@ Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $Output -Force
 Write-Host "Created KernelSU package: $Output"
 Write-Host "Target paths: $($TargetList -join ', ')"
 Write-Host "Hide dirents: $HideDirents"
+Write-Host "Scope mode: $ScopeMode"
+Write-Host "Deny packages: $($DenyPackageList -join ', ')"
+Write-Host "Deny UIDs: $($DenyUidList -join ', ')"
