@@ -211,6 +211,38 @@ https://github.com/Andrea-lyz/LKM-PathMask/releases/download/pathmask-latest/and
 
 KSU 管理器判断是否有更新主要看 `versionCode`，所以每次发新版都要递增。
 
+## 配置文件分别是干什么的
+
+PathMask 的持久化配置都放在 `/data/adb/pathmask`。一般建议用 WebUI 改，手动查看或排查时可以看下面这些文件。
+
+`/data/adb/pathmask/target_path.conf`
+
+要隐藏的路径列表，一行一个绝对路径。空行和 `#` 开头的注释会被忽略。模块加载前至少要有一个路径真实存在，否则开机脚本会跳过加载。
+
+`/data/adb/pathmask/scope_mode.conf`
+
+隐藏范围。填 `deny` 表示黑名单模式，只对指定 App/UID 隐藏；填 `global` 表示全局隐藏，所有进程都看不到目标路径。
+
+`/data/adb/pathmask/hide_dirents.conf`
+
+是否隐藏上级目录里的列表项。填 `1` 时，`ls /system_ext/app` 这类目录列表里也会过滤目标；填 `0` 时，只处理直接访问、stat/getattr 等检查。
+
+`/data/adb/pathmask/deny_packages.conf`
+
+黑名单包名列表，一行一个包名。开机脚本会把这些包名解析成 UID，再传给内核模块。包名写错或 App 没安装时，可能解析不到 UID。
+
+`/data/adb/pathmask/deny_uids.conf`
+
+直接填写 UID，一行一个数字。适合包名解析失败、测试 shell UID，或者你已经知道目标 App UID 的情况。
+
+`/data/adb/pathmask/target_wait_seconds.conf`
+
+开机时等待隐藏路径出现的秒数。有些路径启动较晚，等待时间太短会导致模块跳过加载。
+
+`/data/adb/pathmask/package_wait_seconds.conf`
+
+开机时等待包名解析成 UID 的秒数。检测类 App 或新安装 App 启动较晚时，可以适当调大。
+
 ## 自己打包
 
 Windows PowerShell：
