@@ -43,8 +43,10 @@ Implemented:
 - Resolves package names to UIDs in the KernelSU boot service.
 - Stores runtime config under `/data/adb/pathmask`.
 - Migrates old `/data/adb/nohello` config on first PathMask boot.
-- Provides a KernelSU WebUI with config editing, health checks, paged logs, and
-  one-click diagnostic report copying.
+- Provides a KernelSU WebUI with config validation, health checks, paged logs,
+  one-click diagnostic report copying, hot reload, and temporary pause.
+- Skips future automatic load attempts after repeated `insmod` failures until
+  the user retries from WebUI or clears the failure guard.
 - Avoids importing `kern_path()` / `path_put()` directly. Target resolution
   resolves those helper addresses through kprobes so OEM kernels that prune
   unused VFS helper exports are less likely to reject the module.

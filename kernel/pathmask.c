@@ -589,5 +589,5 @@ module_init(pathmask_init);
 module_exit(pathmask_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("lkm-build");
+MODULE_AUTHOR("Andrea-lyz");
 MODULE_DESCRIPTION("Selective path masking demo via kretprobes");

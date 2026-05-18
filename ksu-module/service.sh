@@ -9,6 +9,9 @@ KO_PATH="$MODDIR/$KO_NAME"
 PERSIST_DIR="/data/adb/pathmask"
 LEGACY_PERSIST_DIR="/data/adb/nohello"
 DEFAULTS_MARKER="$PERSIST_DIR/.defaults_v1_seeded"
+LOAD_FAIL_COUNT_PATH="$PERSIST_DIR/load_fail_count"
+LOAD_FAIL_REASON_PATH="$PERSIST_DIR/load_fail_reason"
+LOAD_FAIL_LIMIT=3
 
 MOD_CONFIG_PATH="$MODDIR/target_path.conf"
 MOD_HIDE_DIRENTS_CONFIG="$MODDIR/hide_dirents.conf"
@@ -40,6 +43,53 @@ DENY_UIDS=""
 TARGET_WAIT_SECONDS=90
 PACKAGE_WAIT_SECONDS=90
 UNRESOLVED_PACKAGES=0
+
+read_load_failure_count() {
+	COUNT=0
+	if [ -f "$LOAD_FAIL_COUNT_PATH" ]; then
+		COUNT="$(head -n 1 "$LOAD_FAIL_COUNT_PATH" 2>/dev/null | tr -d '\r ' || true)"
+	fi
+
+	case "$COUNT" in
+		''|*[!0-9]*)
+			COUNT=0
+			;;
+	esac
+
+	printf '%s\n' "$COUNT"
+}
+
+reset_load_failure_guard() {
+	rm -f "$LOAD_FAIL_COUNT_PATH" "$LOAD_FAIL_REASON_PATH" 2>/dev/null || true
+}
+
+record_load_failure() {
+	REASON="$1"
+	COUNT="$(read_load_failure_count)"
+	COUNT=$((COUNT + 1))
+	mkdir -p "$PERSIST_DIR" 2>/dev/null || true
+	printf '%s\n' "$COUNT" > "$LOAD_FAIL_COUNT_PATH" 2>/dev/null || true
+	printf '%s\n' "$REASON" > "$LOAD_FAIL_REASON_PATH" 2>/dev/null || true
+	log_e "load failure $COUNT/$LOAD_FAIL_LIMIT: $REASON"
+}
+
+should_skip_after_load_failures() {
+	[ "${PATHMASK_IGNORE_FAIL_GUARD:-0}" = "1" ] && return 1
+
+	COUNT="$(read_load_failure_count)"
+	if [ "$COUNT" -ge "$LOAD_FAIL_LIMIT" ]; then
+		if [ -f "$LOAD_FAIL_REASON_PATH" ]; then
+			REASON="$(head -n 1 "$LOAD_FAIL_REASON_PATH" 2>/dev/null || true)"
+		else
+			REASON=""
+		fi
+		log_e "skip loading after $COUNT consecutive failures; reason=$REASON"
+		log_e "use WebUI save-and-hot-reload or delete $LOAD_FAIL_COUNT_PATH to retry"
+		return 0
+	fi
+
+	return 1
+}
 
 log_i() {
 	log -p i -t "$LOG_TAG" "$*"
@@ -423,6 +473,25 @@ wait_for_deny_packages() {
 
 init_persistent_config
 
+if [ -n "${PATHMASK_LOAD_FAIL_LIMIT:-}" ]; then
+	LOAD_FAIL_LIMIT="$PATHMASK_LOAD_FAIL_LIMIT"
+fi
+
+case "$LOAD_FAIL_LIMIT" in
+	''|*[!0-9]*|0)
+		LOAD_FAIL_LIMIT=3
+		;;
+esac
+
+if [ "${PATHMASK_RESET_FAIL_GUARD:-0}" = "1" ]; then
+	reset_load_failure_guard
+	log_i "reset load failure guard"
+fi
+
+if should_skip_after_load_failures; then
+	exit 0
+fi
+
 if [ -f "$CONFIG_PATH" ]; then
 	while IFS= read -r CONFIG_LINE || [ -n "$CONFIG_LINE" ]; do
 		CONFIG_LINE="$(printf '%s' "$CONFIG_LINE" | tr -d '\r')"
@@ -502,6 +571,7 @@ fi
 
 if [ ! -f "$KO_PATH" ]; then
 	log_e "missing module: $KO_PATH"
+	record_load_failure "missing module: $KO_PATH"
 	exit 1
 fi
 
@@ -524,6 +594,7 @@ else
 fi
 
 if grep -q '^pathmask ' /proc/modules 2>/dev/null; then
+	reset_load_failure_guard
 	log_i "pathmask is already loaded"
 	exit 0
 fi
@@ -534,8 +605,10 @@ if grep -q '^nohello ' /proc/modules 2>/dev/null; then
 fi
 
 if insmod "$KO_PATH" target_paths="$TARGET_PATHS" hide_dirents="$HIDE_DIRENTS" scope_mode="$SCOPE_MODE" deny_uids="$DENY_UIDS"; then
+	reset_load_failure_guard
 	log_i "loaded $KO_PATH target_paths=$TARGET_PATHS hide_dirents=$HIDE_DIRENTS scope_mode=$SCOPE_MODE deny_uids=$DENY_UIDS"
 else
 	log_e "failed to load $KO_PATH"
+	record_load_failure "insmod failed: $KO_PATH"
 	exit 1
 fi

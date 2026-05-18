@@ -26,6 +26,8 @@ const files = {
 	scope: `${CONFIGDIR}/scope_mode.conf`,
 	denyPackages: `${CONFIGDIR}/deny_packages.conf`,
 	denyUids: `${CONFIGDIR}/deny_uids.conf`,
+	failCount: `${CONFIGDIR}/load_fail_count`,
+	failReason: `${CONFIGDIR}/load_fail_reason`,
 	service: `${MODDIR}/service.sh`,
 	ko: `${MODDIR}/pathmask.ko`,
 };
@@ -38,6 +40,7 @@ let logPages = { status: [], config: [], kernel: [], script: [] };
 let activeLog = "status";
 let activeLogPage = 0;
 let lastReport = "";
+let lastValidation = { errors: [], warnings: [], ok: [] };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -50,9 +53,11 @@ const actionButtons = [
 	"#refreshBtn",
 	"#loadAppsBtn",
 	"#saveBtn",
+	"#pauseBtn",
 	"#reloadBtn",
 	"#addPathBtn",
 	"#runDiagnosticBtn",
+	"#validateConfigBtn",
 	"#copyReportBtn",
 	"#copyReportBtn2",
 	"#resetDefaultsBtn",
@@ -160,6 +165,10 @@ function linesFromText(text) {
 
 function countCsv(text) {
 	return text.split(",").map((item) => item.trim()).filter(Boolean).length;
+}
+
+function firstLine(text) {
+	return (text || "").split(/\r?\n/)[0]?.trim() || "";
 }
 
 function setText(selector, value) {
@@ -279,6 +288,8 @@ function updateHealthList() {
 	const selected = [...selectedPackages];
 	const directUids = linesFromText($("#denyUidsInput").value);
 	const sysUids = linesFromText((snapshot.sysDenyUids || "").replace(/,/g, "\n"));
+	const loadFailCount = Number.parseInt(firstLine(snapshot.loadFailCountText), 10) || 0;
+	const loadFailReason = firstLine(snapshot.loadFailReasonText);
 
 	if (loaded) {
 		items.push({ level: "ok", title: "模块已加载", body: loaded });
@@ -306,6 +317,22 @@ function updateHealthList() {
 		items.push({ level: "warn", title: "有路径当前不存在", body: "不存在的路径会在内核加载时被跳过。" });
 	} else {
 		items.push({ level: "ok", title: "隐藏路径配置有效", body: `${targets.length} 条路径。` });
+	}
+
+	if (loadFailCount >= 3) {
+		items.push({ level: "bad", title: "连续加载失败保护已触发", body: loadFailReason || "保存并热重载会重置保护并重新尝试加载。" });
+	} else if (loadFailCount > 0) {
+		items.push({ level: "warn", title: "最近发生过加载失败", body: `${loadFailCount}/3：${loadFailReason || "查看内核日志。"}` });
+	}
+
+	for (const message of lastValidation.errors) {
+		items.push({ level: "bad", title: "配置错误", body: message });
+	}
+	for (const message of lastValidation.warnings) {
+		items.push({ level: "warn", title: "配置警告", body: message });
+	}
+	for (const message of lastValidation.ok) {
+		items.push({ level: "ok", title: "配置校验", body: message });
 	}
 
 	if ((snapshot.moduleFlags || "").includes("disable")) {
@@ -413,6 +440,8 @@ async function refreshConfig() {
 	const koInfo = await safeExec(`[ -f ${shellQuote(files.ko)} ] && ls -l ${shellQuote(files.ko)} || echo missing`);
 	const moduleFlags = await safeExec(`ls -1 ${shellQuote(MODDIR)}/disable ${shellQuote(MODDIR)}/remove 2>/dev/null || true`);
 	const legacyConfigInfo = await safeExec(`[ -d ${shellQuote(LEGACY_CONFIGDIR)} ] && echo ${shellQuote(LEGACY_CONFIGDIR)} || true`);
+	const loadFailCountText = await readFile(files.failCount);
+	const loadFailReasonText = await readFile(files.failReason);
 
 	renderPaths(linesFromText(targetText));
 	$("#hideDirentsInput").checked = (hideText.trim() || "1") !== "0";
@@ -436,6 +465,8 @@ async function refreshConfig() {
 		koInfo,
 		moduleFlags,
 		legacyConfigInfo,
+		loadFailCountText,
+		loadFailReasonText,
 	};
 
 	await refreshTargetProbe();
@@ -456,7 +487,99 @@ async function refreshTargetProbe() {
 	lastSnapshot.targetProbe = await safeExec(body);
 }
 
+async function validateConfig(options = {}) {
+	const { throwOnError = false, requireModuleFile = false } = options;
+	const errors = [];
+	const warnings = [];
+	const ok = [];
+	const paths = collectPaths();
+	const seenPaths = new Set();
+	const scope = document.querySelector('input[name="scope"]:checked')?.value || "global";
+	const directUids = linesFromText($("#denyUidsInput").value);
+	const packages = [...selectedPackages].sort();
+
+	if (!paths.length) {
+		errors.push("隐藏路径为空。");
+	}
+
+	for (const path of paths) {
+		if (!path.startsWith("/")) {
+			errors.push(`隐藏路径必须是绝对路径：${path}`);
+		}
+		if (path.includes(",")) {
+			errors.push(`隐藏路径不能包含英文逗号：${path}`);
+		}
+		if (seenPaths.has(path)) {
+			warnings.push(`重复路径会被重复传入内核：${path}`);
+		}
+		seenPaths.add(path);
+	}
+
+	for (const uid of directUids) {
+		if (!/^\d+$/.test(uid)) {
+			errors.push(`UID 只能填写数字：${uid}`);
+		}
+	}
+
+	if (scope === "deny" && packages.length === 0 && directUids.length === 0) {
+		errors.push("黑名单模式下至少需要选择一个包名或填写一个 UID。");
+	}
+
+	if (requireModuleFile && ((lastSnapshot.koInfo || "").includes("missing") ||
+	    (lastSnapshot.koInfo || "").includes("No such file"))) {
+		errors.push(`模块文件不存在：${files.ko}`);
+	}
+
+	await refreshTargetProbe();
+	const probeLines = linesFromText(lastSnapshot.targetProbe || "");
+	const missLines = probeLines.filter((line) => line.startsWith("MISS "));
+	if (paths.length && missLines.length === paths.length) {
+		warnings.push("当前所有隐藏路径都不存在，service.sh 会等待后跳过加载。");
+	} else if (missLines.length) {
+		warnings.push(`${missLines.length} 条隐藏路径当前不存在，内核加载时会跳过这些路径。`);
+	}
+
+	if (scope === "deny" && packages.length) {
+		const packageProbe = await safeExec(`
+for p in ${packages.map(shellQuote).join(" ")}; do
+	if [ -f /data/system/packages.list ] && grep -q "^$p " /data/system/packages.list 2>/dev/null; then
+		echo "OK $p"
+	else
+		echo "MISS $p"
+	fi
+done
+true
+`);
+		const packageProbeLines = linesFromText(packageProbe);
+		const missingPackages = packageProbeLines.filter((line) => line.startsWith("MISS "));
+		if (missingPackages.length === packages.length && directUids.length === 0) {
+			warnings.push("当前选择的包名可能都无法解析 UID，开机服务可能会跳过加载。");
+		} else if (missingPackages.length) {
+			warnings.push(`${missingPackages.length} 个包名当前未在 packages.list 中找到。`);
+		}
+	}
+
+	if (!errors.length && !warnings.length) {
+		ok.push("配置校验通过。");
+	}
+
+	lastValidation = { errors, warnings, ok };
+	updateHealthList();
+
+	if (errors.length) {
+		statusText.textContent = "配置校验未通过";
+		showToast(`配置有 ${errors.length} 个错误`);
+		if (throwOnError) throw new Error(errors[0]);
+		return false;
+	}
+
+	statusText.textContent = warnings.length ? "配置校验有警告" : "配置校验通过";
+	showToast(warnings.length ? `校验完成：${warnings.length} 个警告` : "配置校验通过");
+	return true;
+}
+
 async function saveConfig() {
+	await validateConfig({ throwOnError: true });
 	const scope = document.querySelector('input[name="scope"]:checked')?.value || "global";
 	await writeLines(files.targets, collectPaths());
 	await writeLines(files.hideDirents, [$("#hideDirentsInput").checked ? "1" : "0"]);
@@ -469,14 +592,30 @@ async function saveConfig() {
 }
 
 async function reloadModule() {
-	await saveConfig();
+	await validateConfig({ throwOnError: true, requireModuleFile: true });
+	const scope = document.querySelector('input[name="scope"]:checked')?.value || "global";
+	await writeLines(files.targets, collectPaths());
+	await writeLines(files.hideDirents, [$("#hideDirentsInput").checked ? "1" : "0"]);
+	await writeLines(files.scope, [scope]);
+	await writeLines(files.denyPackages, [...selectedPackages].sort());
+	await writeLines(files.denyUids, linesFromText($("#denyUidsInput").value));
 	statusText.textContent = "正在热重载...";
 	const output = await execShell(
-		`if grep -q '^${MODULE_NAME} ' /proc/modules 2>/dev/null; then rmmod ${MODULE_NAME}; fi; PATHMASK_TARGET_WAIT_SECONDS=5 PATHMASK_PACKAGE_WAIT_SECONDS=5 sh ${shellQuote(files.service)}; dmesg | grep -Ei 'pathmask|nohello|unknown symbol|invalid module|exec format|module_layout' | tail -n 30`
+		`rm -f ${shellQuote(files.failCount)} ${shellQuote(files.failReason)} 2>/dev/null || true; if grep -q '^${MODULE_NAME} ' /proc/modules 2>/dev/null; then rmmod ${MODULE_NAME}; fi; PATHMASK_RESET_FAIL_GUARD=1 PATHMASK_IGNORE_FAIL_GUARD=1 PATHMASK_TARGET_WAIT_SECONDS=5 PATHMASK_PACKAGE_WAIT_SECONDS=5 sh ${shellQuote(files.service)}; dmesg | grep -Ei 'pathmask|nohello|unknown symbol|invalid module|exec format|module_layout' | tail -n 30`
 	);
 	setLogContent("kernel", output);
 	await refreshDiagnostics();
 	showToast("热重载完成");
+}
+
+async function pauseHiding() {
+	const output = await execShell(
+		`if grep -q '^${MODULE_NAME} ' /proc/modules 2>/dev/null; then rmmod ${MODULE_NAME}; log -p i -t pathmask 'hidden paths paused from WebUI'; echo 'pathmask unloaded'; else echo 'pathmask is not loaded'; fi; dmesg | grep -Ei 'pathmask|nohello|unknown symbol|invalid module|exec format|module_layout' | tail -n 30`
+	);
+	setLogContent("kernel", output);
+	await refreshDiagnostics();
+	statusText.textContent = "隐藏已暂停，热重载可恢复";
+	showToast("隐藏已暂停");
 }
 
 async function restoreDefaults() {
@@ -506,6 +645,9 @@ ls -l ${shellQuote(MODDIR)} 2>/dev/null || true
 ls -l ${shellQuote(LEGACY_MODDIR)} 2>/dev/null || true
 echo '--- sysfs parameters ---'
 for f in /sys/module/pathmask/parameters/*; do [ -f "$f" ] && echo "$(basename "$f")=$(cat "$f" 2>/dev/null)"; done
+echo '--- load failure guard ---'
+[ -f ${shellQuote(files.failCount)} ] && echo "load_fail_count=$(cat ${shellQuote(files.failCount)} 2>/dev/null)" || echo "load_fail_count=0"
+[ -f ${shellQuote(files.failReason)} ] && echo "load_fail_reason=$(cat ${shellQuote(files.failReason)} 2>/dev/null)"
 true
 `);
 
@@ -564,8 +706,10 @@ $("#loadAppsBtn").addEventListener("click", () => runAction("正在加载应用.
 $("#refreshBtn").addEventListener("click", () => runAction("正在刷新...", refreshConfig).catch(() => {}));
 $("#searchInput").addEventListener("input", renderApps);
 $("#saveBtn").addEventListener("click", () => runAction("正在保存...", saveConfig).catch(() => {}));
+$("#pauseBtn").addEventListener("click", () => runAction("正在暂停隐藏...", pauseHiding).catch(() => {}));
 $("#reloadBtn").addEventListener("click", () => runAction("正在热重载...", reloadModule).catch(() => {}));
 $("#runDiagnosticBtn").addEventListener("click", () => runAction("正在生成诊断...", refreshDiagnostics).catch(() => {}));
+$("#validateConfigBtn").addEventListener("click", () => runAction("正在校验配置...", () => validateConfig()).catch(() => {}));
 $("#refreshLogsBtn").addEventListener("click", () => runAction("正在刷新日志...", refreshDiagnostics).catch(() => {}));
 $("#copyReportBtn").addEventListener("click", () => copyText(lastReport || buildReport()).catch((error) => showToast(error.message)));
 $("#copyReportBtn2").addEventListener("click", () => copyText($("#reportOutput").value).catch((error) => showToast(error.message)));
