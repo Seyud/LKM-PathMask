@@ -4,7 +4,7 @@ PathMask is a small Android arm64 / GKI external kernel module demo for
 selectively masking configured filesystem paths. It is intended for controlled
 testing on devices you own or administer.
 
-For a beginner-friendly Chinese guide, see [README.zh-CN.md](README.zh-CN.md).
+[中文教程](README.zh-CN.md)
 
 ## What It Builds
 
