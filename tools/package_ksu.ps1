@@ -9,7 +9,8 @@ param(
     [string]$DenyPackage = "com.chunqiunativecheck,com.eltavine.duckdetector,luna.safe.luna",
     [string]$DenyUid = "",
     [int]$TargetWaitSeconds = 90,
-    [int]$PackageWaitSeconds = 90
+    [int]$PackageWaitSeconds = 90,
+    [string]$UpdateJson = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,6 +52,15 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Output) | Out-Nul
 
 Copy-Item -Path (Join-Path $TemplateDir "*") -Destination $StageDir -Recurse -Force
 Copy-Item -LiteralPath $KoPath -Destination (Join-Path $StageDir "pathmask.ko") -Force
+
+$ModulePropPath = Join-Path $StageDir "module.prop"
+if ($UpdateJson.Trim()) {
+    $ModulePropLines = Get-Content -LiteralPath $ModulePropPath -Encoding UTF8 |
+        Where-Object { $_ -notmatch "^updateJson=" }
+    $ModulePropLines += "updateJson=$($UpdateJson.Trim())"
+    Set-Content -LiteralPath $ModulePropPath -Value $ModulePropLines -Encoding UTF8
+}
+
 Set-Content -LiteralPath (Join-Path $StageDir "target_path.conf") -Value $TargetList -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $StageDir "hide_dirents.conf") -Value $HideDirents -NoNewline -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $StageDir "scope_mode.conf") -Value $ScopeMode -NoNewline -Encoding ASCII
@@ -95,3 +105,6 @@ Write-Host "Deny packages: $($DenyPackageList -join ', ')"
 Write-Host "Deny UIDs: $($DenyUidList -join ', ')"
 Write-Host "Target wait seconds: $TargetWaitSeconds"
 Write-Host "Package wait seconds: $PackageWaitSeconds"
+if ($UpdateJson.Trim()) {
+    Write-Host "Update JSON: $($UpdateJson.Trim())"
+}

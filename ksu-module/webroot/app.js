@@ -34,8 +34,8 @@ let apps = [];
 let selectedPackages = new Set();
 let busy = false;
 let lastSnapshot = {};
-let logPages = { script: [], kernel: [], status: [], config: [] };
-let activeLog = "script";
+let logPages = { status: [], config: [], kernel: [], script: [] };
+let activeLog = "status";
 let activeLogPage = 0;
 let lastReport = "";
 
@@ -370,9 +370,13 @@ async function copyText(text) {
 	}
 
 	if (navigator.clipboard?.writeText) {
-		await navigator.clipboard.writeText(text);
-		showToast("已复制");
-		return;
+		try {
+			await navigator.clipboard.writeText(text);
+			showToast("已复制");
+			return;
+		} catch (error) {
+			/* Fall back to textarea copy below. */
+		}
 	}
 
 	const area = document.createElement("textarea");
@@ -563,8 +567,8 @@ $("#saveBtn").addEventListener("click", () => runAction("正在保存...", saveC
 $("#reloadBtn").addEventListener("click", () => runAction("正在热重载...", reloadModule).catch(() => {}));
 $("#runDiagnosticBtn").addEventListener("click", () => runAction("正在生成诊断...", refreshDiagnostics).catch(() => {}));
 $("#refreshLogsBtn").addEventListener("click", () => runAction("正在刷新日志...", refreshDiagnostics).catch(() => {}));
-$("#copyReportBtn").addEventListener("click", () => runAction("正在复制...", () => copyText(lastReport || buildReport())).catch(() => {}));
-$("#copyReportBtn2").addEventListener("click", () => runAction("正在复制...", () => copyText($("#reportOutput").value)).catch(() => {}));
+$("#copyReportBtn").addEventListener("click", () => copyText(lastReport || buildReport()).catch((error) => showToast(error.message)));
+$("#copyReportBtn2").addEventListener("click", () => copyText($("#reportOutput").value).catch((error) => showToast(error.message)));
 $("#resetDefaultsBtn").addEventListener("click", () => runAction("正在恢复默认配置...", restoreDefaults).catch(() => {}));
 $("#prevLogBtn").addEventListener("click", () => {
 	activeLogPage -= 1;

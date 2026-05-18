@@ -10,6 +10,7 @@ DENY_PACKAGES="${DENY_PACKAGES:-com.chunqiunativecheck,com.eltavine.duckdetector
 DENY_UIDS="${DENY_UIDS:-}"
 TARGET_WAIT_SECONDS="${TARGET_WAIT_SECONDS:-90}"
 PACKAGE_WAIT_SECONDS="${PACKAGE_WAIT_SECONDS:-90}"
+UPDATE_JSON_URL="${UPDATE_JSON_URL:-}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
@@ -46,6 +47,11 @@ mkdir -p "$STAGE_DIR" "$(dirname -- "$OUTPUT")"
 
 cp -R "$TEMPLATE_DIR"/. "$STAGE_DIR"/
 cp "$KO_PATH" "$STAGE_DIR/pathmask.ko"
+if [ -n "$UPDATE_JSON_URL" ]; then
+	grep -v '^updateJson=' "$STAGE_DIR/module.prop" > "$STAGE_DIR/module.prop.tmp" || true
+	mv "$STAGE_DIR/module.prop.tmp" "$STAGE_DIR/module.prop"
+	printf 'updateJson=%s\n' "$UPDATE_JSON_URL" >> "$STAGE_DIR/module.prop"
+fi
 printf '%s' "$TARGET_PATHS" | tr ',' '\n' > "$STAGE_DIR/target_path.conf"
 printf '%s' "$HIDE_DIRENTS" > "$STAGE_DIR/hide_dirents.conf"
 printf '%s' "$SCOPE_MODE" > "$STAGE_DIR/scope_mode.conf"
@@ -70,3 +76,6 @@ echo "Deny packages: $DENY_PACKAGES"
 echo "Deny UIDs: $DENY_UIDS"
 echo "Target wait seconds: $TARGET_WAIT_SECONDS"
 echo "Package wait seconds: $PACKAGE_WAIT_SECONDS"
+if [ -n "$UPDATE_JSON_URL" ]; then
+	echo "Update JSON: $UPDATE_JSON_URL"
+fi

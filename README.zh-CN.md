@@ -168,6 +168,43 @@ logcat -d -s pathmask
 dmesg | grep -Ei 'pathmask|unknown symbol|invalid module|module_layout'
 ```
 
+## KSU 管理器更新按钮怎么部署
+
+KernelSU 的 `module.prop` 支持 `updateJson=<url>`。PathMask 不能只放一个统一更新链接，因为不同 KMI 需要不同的 `.ko`，刷错包会加载失败。
+
+现在的部署方式是按 KMI 拆分更新清单：
+
+```text
+update/android12-5.10.json
+update/android13-5.10.json
+update/android13-5.15.json
+update/android14-5.15.json
+update/android14-6.1.json
+update/android15-6.6.json
+update/android16-6.12.json
+```
+
+GitHub Actions 打包时会自动给对应 zip 注入对应的 `updateJson`。例如：
+
+```text
+android15-6.6_pathmask-ksu.zip
+updateJson=https://raw.githubusercontent.com/Andrea-lyz/LKM-PathMask/main/update/android15-6.6.json
+```
+
+这个 JSON 里的 `zipUrl` 再指向：
+
+```text
+https://github.com/Andrea-lyz/LKM-PathMask/releases/download/pathmask-latest/android15-6.6_pathmask-ksu.zip
+```
+
+以后发新版时需要做三件事：
+
+1. 提高 `ksu-module/module.prop` 里的 `version` 和 `versionCode`。
+2. 同步修改 `update/*.json` 里的 `version`、`versionCode` 和更新说明链接。
+3. 推送到 `main`，等待 Actions 重新生成 Release 资产。
+
+KSU 管理器判断是否有更新主要看 `versionCode`，所以每次发新版都要递增。
+
 ## 自己打包
 
 Windows PowerShell：

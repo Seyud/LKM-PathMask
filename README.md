@@ -73,11 +73,22 @@ android16-6.12_pathmask.ko
 android16-6.12_pathmask-ksu.zip
 ```
 
-Non-tag builds are uploaded to the `pathmask-latest` prerelease. Tag builds are
+Non-tag builds are uploaded to the `pathmask-latest` release. Tag builds are
 uploaded to the matching version release.
 
 Install the `*_pathmask-ksu.zip` file that matches your device KMI. The raw
 `.ko` is also uploaded for manual testing.
+
+Release zips include a KMI-specific `updateJson` entry. For example, the
+`android15-6.6` package points KernelSU Manager to:
+
+```text
+https://raw.githubusercontent.com/Andrea-lyz/LKM-PathMask/main/update/android15-6.6.json
+```
+
+That JSON then points back to the matching `android15-6.6_pathmask-ksu.zip`
+asset on the `pathmask-latest` release, so Manager updates do not cross-install
+the wrong KMI package.
 
 ## Local Build
 

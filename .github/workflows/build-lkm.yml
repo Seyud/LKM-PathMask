@@ -53,7 +53,8 @@ jobs:
             [ -e "$ko" ] || continue
             found_ko=1
             base="$(basename "$ko" _pathmask.ko)"
-            sh ./tools/package_ksu.sh "$ko" "release-upload/${base}_pathmask-ksu.zip"
+            update_json_url="https://raw.githubusercontent.com/Andrea-lyz/LKM-PathMask/main/update/${base}.json"
+            UPDATE_JSON_URL="$update_json_url" sh ./tools/package_ksu.sh "$ko" "release-upload/${base}_pathmask-ksu.zip"
           done
 
           if [ "$found_ko" -eq 0 ]; then

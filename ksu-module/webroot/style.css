@@ -51,6 +51,29 @@ h2 {
 	color: color-mix(in srgb, CanvasText 66%, transparent);
 }
 
+.topActions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.iconButton {
+	display: grid;
+	place-items: center;
+	width: 40px;
+	height: 40px;
+	border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+	border-radius: 6px;
+	color: CanvasText;
+	background: color-mix(in srgb, Canvas 88%, CanvasText 12%);
+}
+
+.iconButton svg {
+	width: 20px;
+	height: 20px;
+	fill: currentColor;
+}
+
 .tabs {
 	position: sticky;
 	top: 67px;
