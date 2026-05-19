@@ -110,6 +110,24 @@ jobs:
           echo "WARNING: $AUTOCONF not found; modpost section-mismatch override may not stick"
         fi
 
+        # The Ylarod DDK kernel.makefile invokes modpost with
+        #   scripts/mod/modpost ... -i Module.symvers ...
+        # No KDIR/ prefix. modpost runs with the module dir as cwd, so
+        # that "-i Module.symvers" tries to read our own (empty) output
+        # file rather than the kernel's. Result: every UND symbol is
+        # looked up in an empty index, every lookup misses, and the
+        # generated pathmask.mod.c carries an empty ____versions[] {}.
+        #
+        # Workaround: seed the module dir with the kernel's symvers
+        # before running make. modpost then reads a 148k-line index,
+        # finds CRCs for every symbol pathmask references, and emits a
+        # populated ____versions[] that gets linked into __versions in
+        # the final ko.
+        if [ -f "$KDIR/Module.symvers" ] && [ ! -s "Module.symvers" ]; then
+          cp "$KDIR/Module.symvers" Module.symvers
+          echo "Seeded $(pwd)/Module.symvers from $KDIR/Module.symvers ($(wc -l < Module.symvers) lines)"
+        fi
+
         # KCFLAGS is the Kbuild-blessed "user cflags" append knob, applied
         # AFTER everything else. Setting -fno-lto / -fno-sanitize=cfi here
         # guarantees they win over any earlier -flto=thin / -fsanitize=cfi
