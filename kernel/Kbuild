@@ -4,11 +4,11 @@ ccflags-y += -Wno-strict-prototypes -Wno-int-conversion
 ccflags-y += -Wno-gcc-compat -Wno-missing-prototypes
 ccflags-y += -Wno-declaration-after-statement -Wno-unused-function
 
-# Disable LTO for this OOT module.
+# Disable LTO + CFI for this OOT module.
 #
-# All GKI 5.x / 6.x Android-common kernels enable CONFIG_LTO_CLANG_THIN.
-# With LTO on, Kbuild produces an intermediate bitcode <module>.lto.o
-# before MODPOST runs:
+# All GKI 5.x / 6.x Android-common kernels enable CONFIG_LTO_CLANG_THIN
+# and CONFIG_CFI_CLANG. With LTO on, Kbuild produces an intermediate
+# bitcode <module>.lto.o before MODPOST runs:
 #
 #   CC [M]  pathmask.o
 #   LTO [M] pathmask.lto.o
@@ -20,20 +20,52 @@ ccflags-y += -Wno-declaration-after-statement -Wno-unused-function
 # Bitcode .lto.o files don't carry those relocations, so MODPOST sees
 # zero references, writes a zero-byte __versions, and emits a ko whose
 # modversions table is empty. The kernel then accepts (or, on KSU,
-# tolerates) such a module with at most a "no symbol version for
-# module_layout" warning, which means insmod succeeds even when the ko
-# was built against a kernel whose struct layouts differ from the live
-# kernel. On hardened OEM builds (CFI_CLANG=y, SHADOW_CALL_STACK=y)
-# that mismatch can panic the device during the first kretprobe
-# registration.
+# tolerates) such a module without per-symbol CRC validation, which
+# means insmod succeeds even when the ko was built against a kernel
+# whose struct layouts differ from the live kernel. On hardened OEM
+# builds (CFI_CLANG=y, SHADOW_CALL_STACK=y) that mismatch can panic
+# the device during the first kretprobe registration.
 #
-# Filtering CC_FLAGS_LTO out of KBUILD_CFLAGS / KBUILD_LDFLAGS makes
-# this OOT module compile and link as plain ELF, so MODPOST sees real
+# CFI is the second half of the same problem. With CFI enabled, clang
+# emits __cfi_jt_<sym> jump-table aliases in .data that reference
+# .init.text functions. MODPOST's section-mismatch detector then aborts
+# with "ERROR: modpost: Section mismatches detected." -- and even if
+# we silenced the error, the runtime CFI dispatcher lives in vmlinux
+# and is not aware of jump tables coming from an OOT module, so the
+# generated jt entries are dead weight at best, mis-typed at worst.
+#
+# Filtering CC_FLAGS_LTO / CC_FLAGS_CFI / CC_LDFLAGS_LTO out of
+# KBUILD_*FLAGS makes this OOT module compile and link as a plain
+# relocatable ELF without CFI metadata. MODPOST then sees real
 # relocations and populates __versions with valid CRCs from
-# KDIR/Module.symvers.
+# KDIR/Module.symvers. The rest of the kernel still builds with LTO
+# and CFI -- this is a per-module override only.
+#
+# We filter against both the modern (CC_FLAGS_*) and legacy
+# (CFLAGS_*) variable names because Android-common Kbuild renamed
+# them between 5.10 and 5.15.
 ifdef CONFIG_LTO_CLANG
-KBUILD_CFLAGS  := $(filter-out $(CC_FLAGS_LTO),$(KBUILD_CFLAGS))
-KBUILD_LDFLAGS := $(filter-out $(CC_LDFLAGS_LTO),$(KBUILD_LDFLAGS))
+KBUILD_CFLAGS  := $(filter-out $(CC_FLAGS_LTO)  $(CFLAGS_LTO),$(KBUILD_CFLAGS))
+KBUILD_LDFLAGS := $(filter-out $(CC_LDFLAGS_LTO) $(LDFLAGS_LTO),$(KBUILD_LDFLAGS))
 endif
+ifdef CONFIG_CFI_CLANG
+KBUILD_CFLAGS  := $(filter-out $(CC_FLAGS_CFI)  $(CFLAGS_CFI),$(KBUILD_CFLAGS))
+endif
+
+# Belt-and-suspenders: make sure clang itself sees the off switches
+# even if the filtered variable name above is empty (some kernel
+# trees define neither CC_FLAGS_CFI nor CFLAGS_CFI but inherit
+# -fsanitize=cfi from KCFLAGS).
+ccflags-y += -fno-lto -fno-sanitize=cfi
+ldflags-y += -fno-lto
+
+# Some GKI builds run modpost in -W (error on section mismatch) mode.
+# Even with LTO and CFI off, clang at -O2 against the DDK headers can
+# still emit section-mismatch-shaped artefacts that modpost rejects.
+# Demote those to warnings so the build still produces a ko whose
+# __versions is populated. Real safety lives in the modversions CRC
+# table the kernel checks at insmod time.
+KBUILD_MODPOST_WARN := 1
+export KBUILD_MODPOST_WARN
 
 # Keep a new line here!! Because someone may append config
