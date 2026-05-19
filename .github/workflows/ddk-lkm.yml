@@ -111,21 +111,25 @@ jobs:
         fi
 
         # The Ylarod DDK kernel.makefile invokes modpost with
-        #   scripts/mod/modpost ... -i Module.symvers ...
-        # No KDIR/ prefix. modpost runs with the module dir as cwd, so
-        # that "-i Module.symvers" tries to read our own (empty) output
-        # file rather than the kernel's. Result: every UND symbol is
-        # looked up in an empty index, every lookup misses, and the
-        # generated pathmask.mod.c carries an empty ____versions[] {}.
+        #   scripts/mod/modpost ... -o $(MODDIR)/Module.symvers -i Module.symvers ...
+        # Both -o and -i resolve to the same file. modpost's first
+        # action is to open the output for writing -- which truncates
+        # the file -- so by the time it gets around to reading -i,
+        # there is nothing to read. Seeding the file before make is
+        # therefore a no-op (we tested it; the seed is wiped).
         #
-        # Workaround: seed the module dir with the kernel's symvers
-        # before running make. modpost then reads a 148k-line index,
-        # finds CRCs for every symbol pathmask references, and emits a
-        # populated ____versions[] that gets linked into __versions in
-        # the final ko.
-        if [ -f "$KDIR/Module.symvers" ] && [ ! -s "Module.symvers" ]; then
-          cp "$KDIR/Module.symvers" Module.symvers
-          echo "Seeded $(pwd)/Module.symvers from $KDIR/Module.symvers ($(wc -l < Module.symvers) lines)"
+        # Right fix: feed the kernel's Module.symvers through Kbuild's
+        # documented KBUILD_EXTRA_SYMBOLS hook. That appends an extra
+        # absolute -i path to the modpost command line, distinct from
+        # the truncated -o path, so modpost reads 14k+ lines of CRCs
+        # from the kernel and populates ____versions[] correctly.
+        EXTRA_SYMVERS=""
+        if [ -f "$KDIR/Module.symvers" ]; then
+          # Copy outside the module dir to be defensive against any
+          # cleanup hooks that may stomp it.
+          cp "$KDIR/Module.symvers" /tmp/kdir.symvers
+          EXTRA_SYMVERS="/tmp/kdir.symvers"
+          echo "Will use KBUILD_EXTRA_SYMBOLS=$EXTRA_SYMVERS ($(wc -l < "$EXTRA_SYMVERS") lines)"
         fi
 
         # KCFLAGS is the Kbuild-blessed "user cflags" append knob, applied
@@ -141,6 +145,7 @@ jobs:
         KBUILD_MODPOST_WARN=1 \
         CONFIG_SECTION_MISMATCH_WARN_ONLY=y \
         CONFIG_KSU=m CC=clang \
+        KBUILD_EXTRA_SYMBOLS="$EXTRA_SYMVERS" \
           make
         echo "=== Build completed ==="
 
