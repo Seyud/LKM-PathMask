@@ -111,25 +111,35 @@ jobs:
         fi
 
         # The Ylarod DDK kernel.makefile invokes modpost with
-        #   scripts/mod/modpost ... -o $(MODDIR)/Module.symvers -i Module.symvers ...
-        # Both -o and -i resolve to the same file. modpost's first
-        # action is to open the output for writing -- which truncates
-        # the file -- so by the time it gets around to reading -i,
-        # there is nothing to read. Seeding the file before make is
-        # therefore a no-op (we tested it; the seed is wiped).
+        #   scripts/mod/modpost ... -o .../kernel/Module.symvers -i Module.symvers ...
+        # Both -o and -i resolve to the same file. modpost truncates
+        # the output on open, so the input read is empty.
         #
         # Right fix: feed the kernel's Module.symvers through Kbuild's
         # documented KBUILD_EXTRA_SYMBOLS hook. That appends an extra
-        # absolute -i path to the modpost command line, distinct from
-        # the truncated -o path, so modpost reads 14k+ lines of CRCs
-        # from the kernel and populates ____versions[] correctly.
+        # absolute -i path to the modpost command line.
+        #
+        # First attempt failed with "exported twice". Most likely cause:
+        # KDIR/Module.symvers itself contains duplicate entries (e.g.
+        # from the kernel build merging in-tree and dlkm symvers).
+        # Dedup before feeding to modpost.
         EXTRA_SYMVERS=""
         if [ -f "$KDIR/Module.symvers" ]; then
-          # Copy outside the module dir to be defensive against any
-          # cleanup hooks that may stomp it.
-          cp "$KDIR/Module.symvers" /tmp/kdir.symvers
-          EXTRA_SYMVERS="/tmp/kdir.symvers"
-          echo "Will use KBUILD_EXTRA_SYMBOLS=$EXTRA_SYMVERS ($(wc -l < "$EXTRA_SYMVERS") lines)"
+          RAW=/tmp/kdir.symvers.raw
+          OUT=/tmp/kdir.symvers
+          cp "$KDIR/Module.symvers" "$RAW"
+          # Module.symvers format: CRC<TAB>SYMBOL<TAB>FILE<TAB>EXPORT_TYPE
+          # Dedup by symbol name (column 2).
+          awk -F'\t' '!seen[$2]++' "$RAW" > "$OUT"
+          EXTRA_SYMVERS="$OUT"
+          echo "KBUILD_EXTRA_SYMBOLS=$EXTRA_SYMVERS"
+          echo "  raw lines: $(wc -l < "$RAW")"
+          echo "  dedup'd  : $(wc -l < "$OUT")"
+          # Show a sampling of symbols pathmask cares about, post-dedup.
+          for s in register_kretprobe kfree kstrdup snd_compr_free_pages; do
+            n=$(awk -F'\t' -v sym="$s" '$2==sym' "$OUT" | wc -l)
+            echo "  $s appears $n time(s)"
+          done
         fi
 
         # KCFLAGS is the Kbuild-blessed "user cflags" append knob, applied
