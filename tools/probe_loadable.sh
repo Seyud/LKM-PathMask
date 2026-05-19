@@ -190,32 +190,59 @@ done
 	echo "modversions   : $HAS_MODVERSIONS (1=has CRC table, 0=empty/missing)"
 
 	# Verdict
+	#
+	# How insmod actually validates a ko on this kernel:
+	#   * If both kernel and ko have CONFIG_MODVERSIONS=y AND the ko
+	#     carries a non-empty __versions section, the kernel's
+	#     same_magic() skips the version prefix of vermagic and only
+	#     compares the suffix (" SMP preempt mod_unload modversions
+	#     aarch64"). The actual ABI compatibility is then enforced
+	#     per-symbol via __versions CRCs.
+	#   * If __versions is empty, same_magic() compares the FULL
+	#     vermagic string. A prefix mismatch then rejects the load
+	#     with -ENOEXEC. But there are kernels in the wild (some OEM
+	#     forks, some KSU-patched paths) where the vermagic check is
+	#     looser, the ko ends up loaded WITHOUT any CRC validation,
+	#     and a struct-layout mismatch then trips CFI/SCS during
+	#     kretprobe registration -- this is the ishtar reboot path.
+	#
+	# Refusal rules:
+	#   * empty __versions: refuse, full stop. The kernel cannot
+	#     enforce ABI for us, and we have at least one device where
+	#     this combination causes an instant reboot.
+	#   * vermagic prefix mismatch AND empty __versions: refuse with
+	#     two reasons.
+	#   * vermagic prefix mismatch BUT __versions present: warn only.
+	#     The kernel's CRC check will accept or reject correctly; we
+	#     are not in a position to be more strict than that.
 	VERDICT="ok"
 	REASONS=""
+	WARNINGS=""
 	case "$KO_VM_PREFIX" in
-		"$KERNEL_REL")
-			# exact match, best case
-			;;
-		"")
-			VERDICT="refuse"
-			REASONS="$REASONS unable_to_read_ko_vermagic"
+		"$KERNEL_REL"|"")
+			# exact match or no readable vermagic
+			if [ -z "$KO_VM_PREFIX" ]; then
+				VERDICT="refuse"
+				REASONS="$REASONS unable_to_read_ko_vermagic"
+			fi
 			;;
 		*)
-			VERDICT="refuse"
-			REASONS="$REASONS vermagic_prefix_mismatch"
+			if [ "$HAS_MODVERSIONS" -eq 0 ]; then
+				VERDICT="refuse"
+				REASONS="$REASONS vermagic_prefix_mismatch"
+			else
+				WARNINGS="$WARNINGS vermagic_prefix_mismatch_but_modversions_present"
+			fi
 			;;
 	esac
 	if [ "$HAS_MODVERSIONS" -eq 0 ]; then
 		VERDICT="refuse"
 		REASONS="$REASONS empty_modversions_table"
 	fi
-	case "$KO_VERMAGIC" in
-		*-dirty*|*"_r00"*)
-			VERDICT="refuse"
-			REASONS="$REASONS dirty_or_scratch_kernel_tree"
-		;;
-	esac
 	echo "verdict       : $VERDICT$REASONS"
+	if [ -n "$WARNINGS" ]; then
+		echo "warnings      :$WARNINGS"
+	fi
 
 	if [ "$VERDICT" = "refuse" ] && [ "$PROBE_FORCE_INSMOD" != "1" ]; then
 		echo

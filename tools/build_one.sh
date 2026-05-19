@@ -79,8 +79,7 @@ esac
 
 case "$VM" in
     *-dirty*|*"_r00"*)
-        echo "FAIL: vermagic contains -dirty / _r00 marker (non-KMI tree)"
-        FAIL=1
+        echo "WARN: vermagic contains -dirty / _r00 marker (Ylarod DDK convention; modversions check skips this prefix)"
     ;;
 esac
 

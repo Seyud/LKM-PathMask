@@ -91,8 +91,22 @@ jobs:
 
         echo "Copied to: /github/workspace/out/$OUTPUT_NAME"
         ls -la "/github/workspace/out/$OUTPUT_NAME"
-        llvm-strip -d "/github/workspace/out/$OUTPUT_NAME"
-        echo "Size after stripping: $(du -h "/github/workspace/out/$OUTPUT_NAME" | cut -f1)"
+
+        # IMPORTANT: do NOT run `llvm-strip -d` here. Even though -d is
+        # nominally --strip-debug, in practice it also drops the
+        # SHF_ALLOC __versions section on this DDK toolchain, leaving a ko
+        # that bypasses the kernel's modversions CRC check at insmod time.
+        # An OOT pathmask.ko without modversions has been observed to load
+        # successfully and then crash inside register_kretprobe on a
+        # kernel whose struct layouts differ slightly (Xiaomi ishtar
+        # 5.15.178 vs the DDK's 5.15.202).
+        #
+        # If size becomes a real problem we can selectively strip just
+        # .BTF / .debug* with `llvm-objcopy --remove-section=.BTF
+        # --strip-debug --keep-section=__versions ...`, but for now keeping
+        # the unstripped ko (~330KB) is correct.
+        echo "=== Skipping llvm-strip to preserve __versions ==="
+        ls -la "/github/workspace/out/$OUTPUT_NAME"
 
     - name: Verify ko ABI compatibility for ${{ inputs.kmi }}
       run: |
@@ -167,11 +181,12 @@ jobs:
         case "$VM" in
           *-dirty*|*"_r00"*)
             {
-              echo "FAIL: vermagic contains a -dirty / _r00 marker."
-              echo "      the build was based on an uncommitted / scratch kernel"
-              echo "      tree, not on a released android-common KMI tree."
+              echo "WARN: vermagic contains a -dirty / _r00 marker."
+              echo "      this is a Ylarod DDK convention, not necessarily"
+              echo "      a problem -- the kernel's same_magic() skips the"
+              echo "      version prefix when both sides have modversions."
+              echo "      We do not fail the build on this alone."
             } | tee -a "$REPORT"
-            FAIL=1
           ;;
         esac
 
