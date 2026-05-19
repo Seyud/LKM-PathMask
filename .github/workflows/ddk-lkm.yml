@@ -87,24 +87,57 @@ jobs:
 
         mkdir -p /github/workspace/out
         OUTPUT_NAME="${{ inputs.kmi }}_pathmask.ko"
+
+        # === IMMEDIATE post-build inspection (BEFORE any strip) ===
+        # If __versions is already empty here, the problem is in modpost
+        # or in the kernel headers, not in any later strip step.
+        echo
+        echo "=== ko inspection IMMEDIATELY after make (no strip yet) ==="
+        ls -la pathmask.ko
+        if command -v llvm-readelf >/dev/null 2>&1; then RE=llvm-readelf
+        elif command -v readelf >/dev/null 2>&1; then RE=readelf
+        else RE=""; fi
+
+        if [ -n "$RE" ]; then
+          echo
+          echo "-- sections matching __versions / __ksymtab / modinfo --"
+          $RE -SW pathmask.ko 2>&1 | grep -E '__versions|__ksymtab|__kcrctab|modinfo|note|\.gnu' || true
+          echo
+          echo "-- full section table head --"
+          $RE -SW pathmask.ko 2>&1 | head -n 60
+        fi
+
+        if command -v modinfo >/dev/null 2>&1; then
+          echo
+          echo "-- modinfo (full) --"
+          modinfo pathmask.ko || true
+          echo
+          echo "-- modversion line count --"
+          modinfo pathmask.ko 2>/dev/null | grep -c '^modversion:' || true
+        fi
+
+        echo
+        echo "-- Module.symvers produced for our module --"
+        ls -la Module.symvers 2>/dev/null || true
+        head -n 20 Module.symvers 2>/dev/null || true
+
+        echo
+        echo "-- compile-time .config bits relevant to modversions --"
+        if [ -n "${KDIR:-}" ] && [ -f "$KDIR/.config" ]; then
+          grep -E '^(CONFIG_MODULES|CONFIG_MODVERSIONS|CONFIG_TRIM_UNUSED_KSYMS|CONFIG_MODULE_REL|CONFIG_DEBUG_INFO_BTF)' "$KDIR/.config" || true
+        fi
+        echo "=========================================================="
+
         cp pathmask.ko "/github/workspace/out/$OUTPUT_NAME"
 
+        echo
         echo "Copied to: /github/workspace/out/$OUTPUT_NAME"
         ls -la "/github/workspace/out/$OUTPUT_NAME"
 
         # IMPORTANT: do NOT run `llvm-strip -d` here. Even though -d is
-        # nominally --strip-debug, in practice it also drops the
-        # SHF_ALLOC __versions section on this DDK toolchain, leaving a ko
-        # that bypasses the kernel's modversions CRC check at insmod time.
-        # An OOT pathmask.ko without modversions has been observed to load
-        # successfully and then crash inside register_kretprobe on a
-        # kernel whose struct layouts differ slightly (Xiaomi ishtar
-        # 5.15.178 vs the DDK's 5.15.202).
-        #
-        # If size becomes a real problem we can selectively strip just
-        # .BTF / .debug* with `llvm-objcopy --remove-section=.BTF
-        # --strip-debug --keep-section=__versions ...`, but for now keeping
-        # the unstripped ko (~330KB) is correct.
+        # nominally --strip-debug, on an already-modposted ko it can
+        # remove sections we still need. We keep the unstripped ko (the
+        # full ABI sanity gate runs on it next).
         echo "=== Skipping llvm-strip to preserve __versions ==="
         ls -la "/github/workspace/out/$OUTPUT_NAME"
 
