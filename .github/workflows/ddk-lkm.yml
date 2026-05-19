@@ -4,13 +4,18 @@ on:
   workflow_call:
     inputs:
       kmi:
-        description: 'KMI version'
+        description: 'KMI version (e.g. android13-5.15)'
         required: true
         type: string
-      ddk_release:
-        description: 'DDK release version'
+      ddk_image:
+        description: 'DDK image name (without tag), e.g. ghcr.io/ylarod/ddk or ghcr.io/ylarod/ddk-min'
         required: false
-        default: '20260313'
+        default: 'ghcr.io/ylarod/ddk'
+        type: string
+      ddk_tag:
+        description: 'DDK image tag suffix. Use the KMI name alone (e.g. android13-5.15) for ddk:KMI, or KMI-DATE (e.g. android13-5.15-20260313) for ddk-min:KMI-DATE.'
+        required: false
+        default: ''
         type: string
 
 jobs:
@@ -18,7 +23,7 @@ jobs:
     name: Build pathmask for ${{ inputs.kmi }}
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/ylarod/ddk-min:${{ inputs.kmi }}-${{ inputs.ddk_release }}
+      image: ${{ inputs.ddk_image }}:${{ inputs.ddk_tag != '' && inputs.ddk_tag || inputs.kmi }}
       options: --privileged
 
     steps:
@@ -26,13 +31,58 @@ jobs:
       uses: actions/checkout@v6
 
     - name: Build pathmask.ko
+      shell: bash
       run: |
-        cd kernel
+        set -eu
 
+        echo "=== Container info ==="
+        cat /etc/os-release 2>/dev/null | head -n 2 || true
+        uname -a || true
+        # Some ddk images expose envsetup.sh that pins KDIR/CC/etc. Source it
+        # if present so we work the same way the official template does.
+        for env_sh in \
+          /opt/ddk/envsetup.sh \
+          /opt/ddk/scripts/envsetup.sh \
+          /workspace/envsetup.sh \
+          /envsetup.sh; do
+          if [ -f "$env_sh" ]; then
+            echo "Sourcing $env_sh"
+            # shellcheck disable=SC1090
+            . "$env_sh"
+            break
+          fi
+        done
+
+        # Some images export DDK_TARGET / select_target style helpers.
+        if command -v ddk-select >/dev/null 2>&1; then
+          echo "ddk-select ${{ inputs.kmi }}"
+          ddk-select "${{ inputs.kmi }}" || true
+        fi
+
+        echo
+        echo "=== Toolchain / KDIR ==="
+        echo "KDIR=${KDIR:-(unset)}"
+        if [ -n "${KDIR:-}" ]; then
+          ls -la "$KDIR" 2>/dev/null | head -n 20 || true
+          if [ -f "$KDIR/Module.symvers" ]; then
+            SYMVERS_LINES=$(wc -l < "$KDIR/Module.symvers" || echo 0)
+            echo "Module.symvers lines: $SYMVERS_LINES"
+            head -n 3 "$KDIR/Module.symvers" || true
+          else
+            echo "WARNING: $KDIR/Module.symvers not found"
+          fi
+          if [ -f "$KDIR/include/config/kernel.release" ]; then
+            echo -n "kernel.release: "
+            cat "$KDIR/include/config/kernel.release"
+          fi
+        fi
+        which clang || true
+        clang --version 2>&1 | head -n 1 || true
+
+        echo
         echo "=== Building pathmask.ko for KMI: ${{ inputs.kmi }} ==="
-
+        cd kernel
         CONFIG_KSU=m CC=clang make
-
         echo "=== Build completed ==="
 
         mkdir -p /github/workspace/out

@@ -13,41 +13,35 @@ permissions:
 jobs:
   build-lkm:
     strategy:
+      # don't cancel surviving matrix legs when one fails; we want
+      # to know which KMIs pass the new sanity gate
+      fail-fast: false
       matrix:
         include:
-          # 每个 KMI 用一个独立的 ddk_release 标签，便于在不影响其他 KMI 的
-          # 情况下逐一升级 toolchain / 内核源码版本。
+          # 默认走 ghcr.io/ylarod/ddk:<KMI>，这是 Ylarod/ddk README 推荐的
+          # tag 形式，里面挂的是真正的 android-common -lts 内核源码。
+          # 之前我们用的是 ddk-min:<KMI>-20260313，那个 tag 里的 5.15
+          # 源码标记为 "_r00-dirty" 且不含 modversions 表，新加的 ABI
+          # sanity gate 会让它 fail。
+          #
+          # 单 KMI 想换镜像或固定日期 tag 时，把对应行加上 ddk_image 或
+          # ddk_tag 字段，例如：
+          #
+          #   - kmi: android13-5.15
+          #     ddk_image: 'ghcr.io/ylarod/ddk-min'
+          #     ddk_tag:   'android13-5.15-20260313'
           - kmi: android12-5.10
-            ddk_release: '20260313'
           - kmi: android13-5.10
-            ddk_release: '20260313'
           - kmi: android13-5.15
-            # WARNING: 20260313 这个镜像里的 android13-5.15 内核源码是
-            # 5.15.202 + LOCALVERSION="_r00-dirty"，**不是**真正的 GKI KMI
-            # tree —— 编出来的 ko 没有 modversions CRC 表，并且 vermagic
-            # 不含 KMI tag。在小米 ishtar (5.15.178-android13-8) 上加载这
-            # 版 ko 会撞上 CFI/SCS 立刻重启 (issue #N)。
-            #
-            # 临时方案：CI 里的 "Verify ko ABI compatibility" 步骤现在
-            # 会**主动让 build 失败**，而不是发布坏二进制。
-            #
-            # 长期方案：把 ddk_release 替换为真正包含 GKI android13-5.15 KMI
-            # tree 的镜像 tag，可以用：
-            #   tools/pick_ddk_tag.sh android13-5.15
-            # 来扫描可用 tag。
-            ddk_release: '20260313'
           - kmi: android14-5.15
-            ddk_release: '20260313'
           - kmi: android14-6.1
-            ddk_release: '20260313'
           - kmi: android15-6.6
-            ddk_release: '20260313'
           - kmi: android16-6.12
-            ddk_release: '20260313'
     uses: ./.github/workflows/ddk-lkm.yml
     with:
       kmi: ${{ matrix.kmi }}
-      ddk_release: ${{ matrix.ddk_release }}
+      ddk_image: ${{ matrix.ddk_image || 'ghcr.io/ylarod/ddk' }}
+      ddk_tag:   ${{ matrix.ddk_tag   || '' }}
 
   publish-release:
     name: Publish module zips to GitHub Release
