@@ -1,7 +1,7 @@
 name: Build PathMask for All KMI Targets
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
@@ -14,23 +14,48 @@ jobs:
   build-lkm:
     strategy:
       matrix:
-        kmi:
-          - android12-5.10
-          - android13-5.10
-          - android13-5.15
-          - android14-5.15
-          - android14-6.1
-          - android15-6.6
-          - android16-6.12
+        include:
+          # 每个 KMI 用一个独立的 ddk_release 标签，便于在不影响其他 KMI 的
+          # 情况下逐一升级 toolchain / 内核源码版本。
+          - kmi: android12-5.10
+            ddk_release: '20260313'
+          - kmi: android13-5.10
+            ddk_release: '20260313'
+          - kmi: android13-5.15
+            # WARNING: 20260313 这个镜像里的 android13-5.15 内核源码是
+            # 5.15.202 + LOCALVERSION="_r00-dirty"，**不是**真正的 GKI KMI
+            # tree —— 编出来的 ko 没有 modversions CRC 表，并且 vermagic
+            # 不含 KMI tag。在小米 ishtar (5.15.178-android13-8) 上加载这
+            # 版 ko 会撞上 CFI/SCS 立刻重启 (issue #N)。
+            #
+            # 临时方案：CI 里的 "Verify ko ABI compatibility" 步骤现在
+            # 会**主动让 build 失败**，而不是发布坏二进制。
+            #
+            # 长期方案：把 ddk_release 替换为真正包含 GKI android13-5.15 KMI
+            # tree 的镜像 tag，可以用：
+            #   tools/pick_ddk_tag.sh android13-5.15
+            # 来扫描可用 tag。
+            ddk_release: '20260313'
+          - kmi: android14-5.15
+            ddk_release: '20260313'
+          - kmi: android14-6.1
+            ddk_release: '20260313'
+          - kmi: android15-6.6
+            ddk_release: '20260313'
+          - kmi: android16-6.12
+            ddk_release: '20260313'
     uses: ./.github/workflows/ddk-lkm.yml
     with:
       kmi: ${{ matrix.kmi }}
-      ddk_release: '20260313'
+      ddk_release: ${{ matrix.ddk_release }}
 
   publish-release:
     name: Publish module zips to GitHub Release
     needs: build-lkm
-    if: github.event_name != 'pull_request'
+    # Only publish from main or version tags. Dev branches build + verify
+    # ABI but never publish, so testing branches cannot accidentally
+    # overwrite the pathmask-latest tag that real users depend on.
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code

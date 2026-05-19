@@ -44,6 +44,94 @@ jobs:
         llvm-strip -d "/github/workspace/out/$OUTPUT_NAME"
         echo "Size after stripping: $(du -h "/github/workspace/out/$OUTPUT_NAME" | cut -f1)"
 
+    - name: Verify ko ABI compatibility for ${{ inputs.kmi }}
+      run: |
+        set -eu
+        KO="/github/workspace/out/${{ inputs.kmi }}_pathmask.ko"
+        KMI="${{ inputs.kmi }}"
+
+        echo "=== Inspecting $KO ==="
+        ls -la "$KO"
+
+        # Pick whatever modinfo / readelf / strings the container has.
+        for cmd in modinfo /usr/bin/modinfo /usr/sbin/modinfo; do
+          if command -v "$cmd" >/dev/null 2>&1; then MODINFO="$cmd"; break; fi
+        done
+        for cmd in llvm-readelf readelf; do
+          if command -v "$cmd" >/dev/null 2>&1; then READELF="$cmd"; break; fi
+        done
+        for cmd in llvm-strings strings; do
+          if command -v "$cmd" >/dev/null 2>&1; then STRINGS="$cmd"; break; fi
+        done
+
+        FAIL=0
+
+        # 1. vermagic must mention this KMI tag (e.g. "android13-").
+        # The android-common kernel sets LOCALVERSION to something like
+        # "-android13-9", which ends up in vermagic. A ko built against a
+        # mainline / non-KMI tree (e.g. "5.15.202_r00-dirty") would silently
+        # produce a binary that looks like a GKI module but is not one.
+        KMI_TAG="$(printf '%s' "$KMI" | cut -d- -f1)" # e.g. "android13"
+        VM=""
+        if [ -n "${MODINFO:-}" ]; then
+          VM="$($MODINFO "$KO" 2>/dev/null | awk '/^vermagic:/ {sub(/^vermagic:[[:space:]]+/, ""); print; exit}')"
+        fi
+        if [ -z "$VM" ] && [ -n "${STRINGS:-}" ]; then
+          VM="$($STRINGS "$KO" | grep -m1 '^vermagic=' | sed 's/^vermagic=//')"
+        fi
+        echo "vermagic: $VM"
+        case "$VM" in
+          *"${KMI_TAG}-"*) echo "PASS: vermagic carries KMI tag '${KMI_TAG}-'" ;;
+          *)
+            echo "FAIL: vermagic does not contain KMI tag '${KMI_TAG}-'"
+            echo "      this ko was likely built against a non-GKI kernel tree."
+            FAIL=1
+          ;;
+        esac
+
+        # 2. __versions section must be non-empty (modversions CRC table).
+        if [ -n "${READELF:-}" ]; then
+          VS="$($READELF -SW "$KO" 2>/dev/null | awk '/[[:space:]]__versions[[:space:]]/ {print "0x" $6; exit}')"
+          if [ -z "$VS" ]; then VS="0x0"; fi
+          # Some readelf builds put size in column 5 vs 6 depending on flags.
+          # As a fallback, parse a wider window.
+          if [ "$VS" = "0x0" ]; then
+            VS="$($READELF -SW "$KO" 2>/dev/null | awk '/__versions/ {for (i=1; i<=NF; i++) if ($i ~ /^[0-9a-fA-F]+$/ && length($i) >= 6) print "0x" $i}' | head -n 1)"
+            [ -z "$VS" ] && VS="0x0"
+          fi
+        else
+          VS="0x?"
+        fi
+        echo "__versions size: $VS"
+        if [ "$VS" = "0x0" ] || [ "$VS" = "0x00000000" ]; then
+          echo "FAIL: __versions section is empty; ko has no modversions CRC table."
+          echo "      such a ko bypasses the per-symbol CRC check on the device,"
+          echo "      and on hardened OEM kernels can trip CFI/SCS during probe"
+          echo "      registration -- causing instant reboots with no dmesg trace."
+          FAIL=1
+        else
+          echo "PASS: __versions section is non-empty"
+        fi
+
+        # 3. modinfo should show at least one modversion: line.
+        if [ -n "${MODINFO:-}" ]; then
+          MV_COUNT="$($MODINFO "$KO" 2>/dev/null | grep -c '^modversion:' || true)"
+          echo "modversion: lines = $MV_COUNT"
+          if [ "$MV_COUNT" -lt 1 ]; then
+            echo "FAIL: modinfo reports no modversion: lines."
+            FAIL=1
+          else
+            echo "PASS: modinfo reports $MV_COUNT modversion entries"
+          fi
+        fi
+
+        if [ "$FAIL" -ne 0 ]; then
+          echo "::error::ko ABI sanity gate failed for $KMI; refusing to publish a binary that may brick devices."
+          exit 1
+        fi
+
+        echo "=== ABI sanity gate PASSED for $KMI ==="
+
     - name: Upload PathMask artifacts
       uses: actions/upload-artifact@v7
       with:
