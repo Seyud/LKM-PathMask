@@ -209,6 +209,12 @@ done
 		VERDICT="refuse"
 		REASONS="$REASONS empty_modversions_table"
 	fi
+	case "$KO_VERMAGIC" in
+		*-dirty*|*"_r00"*)
+			VERDICT="refuse"
+			REASONS="$REASONS dirty_or_scratch_kernel_tree"
+		;;
+	esac
 	echo "verdict       : $VERDICT$REASONS"
 
 	if [ "$VERDICT" = "refuse" ] && [ "$PROBE_FORCE_INSMOD" != "1" ]; then

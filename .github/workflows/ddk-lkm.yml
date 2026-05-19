@@ -49,9 +49,12 @@ jobs:
         set -eu
         KO="/github/workspace/out/${{ inputs.kmi }}_pathmask.ko"
         KMI="${{ inputs.kmi }}"
+        REPORT="/github/workspace/out/${{ inputs.kmi }}_verify-report.txt"
 
-        echo "=== Inspecting $KO ==="
-        ls -la "$KO"
+        {
+          echo "=== Inspecting $KO ==="
+          ls -la "$KO"
+        } | tee "$REPORT"
 
         # Pick whatever modinfo / readelf / strings the container has.
         for cmd in modinfo /usr/bin/modinfo /usr/sbin/modinfo; do
@@ -66,7 +69,21 @@ jobs:
 
         FAIL=0
 
-        # 1. vermagic must mention this KMI tag (e.g. "android13-").
+        # Helper: convert "0x000000" / "0xABCD" / "00ABCD" to decimal.
+        # Returns 0 if input is empty or unparseable. POSIX-only, no local,
+        # no ksh extended globs.
+        hex_to_dec() {
+          h="${1#0x}"
+          h="${h#0X}"
+          while [ "${h#0}" != "$h" ] && [ -n "$h" ]; do h="${h#0}"; done
+          if [ -z "$h" ]; then echo 0; return; fi
+          case "$h" in
+            *[!0-9a-fA-F]*) echo 0; return;;
+          esac
+          printf '%d\n' "0x$h"
+        }
+
+        # 1. vermagic must mention this KMI tag and must not contain "-dirty".
         # The android-common kernel sets LOCALVERSION to something like
         # "-android13-9", which ends up in vermagic. A ko built against a
         # mainline / non-KMI tree (e.g. "5.15.202_r00-dirty") would silently
@@ -79,61 +96,109 @@ jobs:
         if [ -z "$VM" ] && [ -n "${STRINGS:-}" ]; then
           VM="$($STRINGS "$KO" | grep -m1 '^vermagic=' | sed 's/^vermagic=//')"
         fi
-        echo "vermagic: $VM"
+        {
+          echo
+          echo "vermagic: $VM"
+        } | tee -a "$REPORT"
+
         case "$VM" in
-          *"${KMI_TAG}-"*) echo "PASS: vermagic carries KMI tag '${KMI_TAG}-'" ;;
+          *"${KMI_TAG}-"*)
+            echo "PASS: vermagic carries KMI tag '${KMI_TAG}-'" | tee -a "$REPORT"
+          ;;
           *)
-            echo "FAIL: vermagic does not contain KMI tag '${KMI_TAG}-'"
-            echo "      this ko was likely built against a non-GKI kernel tree."
+            {
+              echo "FAIL: vermagic does not contain KMI tag '${KMI_TAG}-'"
+              echo "      this ko was likely built against a non-GKI kernel tree."
+            } | tee -a "$REPORT"
+            FAIL=1
+          ;;
+        esac
+
+        case "$VM" in
+          *-dirty*|*"_r00"*)
+            {
+              echo "FAIL: vermagic contains a -dirty / _r00 marker."
+              echo "      the build was based on an uncommitted / scratch kernel"
+              echo "      tree, not on a released android-common KMI tree."
+            } | tee -a "$REPORT"
             FAIL=1
           ;;
         esac
 
         # 2. __versions section must be non-empty (modversions CRC table).
+        VS_HEX="0x0"
         if [ -n "${READELF:-}" ]; then
-          VS="$($READELF -SW "$KO" 2>/dev/null | awk '/[[:space:]]__versions[[:space:]]/ {print "0x" $6; exit}')"
-          if [ -z "$VS" ]; then VS="0x0"; fi
-          # Some readelf builds put size in column 5 vs 6 depending on flags.
-          # As a fallback, parse a wider window.
-          if [ "$VS" = "0x0" ]; then
-            VS="$($READELF -SW "$KO" 2>/dev/null | awk '/__versions/ {for (i=1; i<=NF; i++) if ($i ~ /^[0-9a-fA-F]+$/ && length($i) >= 6) print "0x" $i}' | head -n 1)"
-            [ -z "$VS" ] && VS="0x0"
+          # Try column 6 first (typical -SW layout: [Nr] Name Type Address Off Size ...)
+          VS_HEX="$($READELF -SW "$KO" 2>/dev/null | awk '/[[:space:]]__versions[[:space:]]/ {print $6; exit}')"
+          [ -z "$VS_HEX" ] && VS_HEX="0"
+          # Fallback: scan the line and pick first 6+ digit hex token.
+          if [ "$(hex_to_dec "$VS_HEX")" -eq 0 ]; then
+            VS_HEX="$($READELF -SW "$KO" 2>/dev/null | awk '/__versions/ {for (i=1; i<=NF; i++) if ($i ~ /^[0-9a-fA-F]{6,}$/) {print $i; exit}}')"
+            [ -z "$VS_HEX" ] && VS_HEX="0"
           fi
-        else
-          VS="0x?"
         fi
-        echo "__versions size: $VS"
-        if [ "$VS" = "0x0" ] || [ "$VS" = "0x00000000" ]; then
-          echo "FAIL: __versions section is empty; ko has no modversions CRC table."
-          echo "      such a ko bypasses the per-symbol CRC check on the device,"
-          echo "      and on hardened OEM kernels can trip CFI/SCS during probe"
-          echo "      registration -- causing instant reboots with no dmesg trace."
+        VS_DEC="$(hex_to_dec "$VS_HEX")"
+        {
+          echo
+          echo "__versions size: 0x${VS_HEX#0x} ($VS_DEC bytes)"
+        } | tee -a "$REPORT"
+
+        if [ "$VS_DEC" -le 0 ]; then
+          {
+            echo "FAIL: __versions section is empty; ko has no modversions CRC table."
+            echo "      such a ko bypasses the per-symbol CRC check on the device,"
+            echo "      and on hardened OEM kernels can trip CFI/SCS during probe"
+            echo "      registration -- causing instant reboots with no dmesg trace."
+          } | tee -a "$REPORT"
           FAIL=1
         else
-          echo "PASS: __versions section is non-empty"
+          echo "PASS: __versions section is non-empty ($VS_DEC bytes)" | tee -a "$REPORT"
         fi
 
         # 3. modinfo should show at least one modversion: line.
         if [ -n "${MODINFO:-}" ]; then
           MV_COUNT="$($MODINFO "$KO" 2>/dev/null | grep -c '^modversion:' || true)"
-          echo "modversion: lines = $MV_COUNT"
+          {
+            echo
+            echo "modversion: lines = $MV_COUNT"
+          } | tee -a "$REPORT"
           if [ "$MV_COUNT" -lt 1 ]; then
-            echo "FAIL: modinfo reports no modversion: lines."
+            echo "FAIL: modinfo reports no modversion: lines." | tee -a "$REPORT"
             FAIL=1
           else
-            echo "PASS: modinfo reports $MV_COUNT modversion entries"
+            echo "PASS: modinfo reports $MV_COUNT modversion entries" | tee -a "$REPORT"
           fi
         fi
 
+        # Capture the full modinfo + readelf summary for offline analysis.
+        {
+          echo
+          echo "=== modinfo (full) ==="
+          [ -n "${MODINFO:-}" ] && $MODINFO "$KO" 2>&1 || echo "(no modinfo)"
+          echo
+          echo "=== readelf -SW (sections) ==="
+          [ -n "${READELF:-}" ] && $READELF -SW "$KO" 2>&1 || echo "(no readelf)"
+          echo
+          echo "=== relevant strings ==="
+          if [ -n "${STRINGS:-}" ]; then
+            $STRINGS "$KO" | grep -E '^(vermagic|name|description|depends|srcversion)=' || true
+          fi
+        } >> "$REPORT"
+
         if [ "$FAIL" -ne 0 ]; then
           echo "::error::ko ABI sanity gate failed for $KMI; refusing to publish a binary that may brick devices."
+          echo "::notice::See $REPORT (also uploaded as artifact) for full details."
           exit 1
         fi
 
         echo "=== ABI sanity gate PASSED for $KMI ==="
 
     - name: Upload PathMask artifacts
+      if: always()
       uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.kmi }}-pathmask
-        path: /github/workspace/out/${{ inputs.kmi }}_pathmask.ko
+        path: |
+          /github/workspace/out/${{ inputs.kmi }}_pathmask.ko
+          /github/workspace/out/${{ inputs.kmi }}_verify-report.txt
+        if-no-files-found: warn

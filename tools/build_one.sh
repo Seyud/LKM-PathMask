@@ -77,6 +77,13 @@ case "$VM" in
     *) echo "FAIL: vermagic does not contain '${KMI_TAG}-'"; FAIL=1 ;;
 esac
 
+case "$VM" in
+    *-dirty*|*"_r00"*)
+        echo "FAIL: vermagic contains -dirty / _r00 marker (non-KMI tree)"
+        FAIL=1
+    ;;
+esac
+
 if command -v llvm-readelf >/dev/null 2>&1; then
     READELF=llvm-readelf
 elif command -v readelf >/dev/null 2>&1; then
