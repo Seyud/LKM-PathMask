@@ -110,24 +110,44 @@ jobs:
           echo "WARNING: $AUTOCONF not found; modpost section-mismatch override may not stick"
         fi
 
-        # Real fix path. After two indirect attempts (seed file got
-        # truncated; KBUILD_EXTRA_SYMBOLS triggered "exported twice"
-        # because modpost double-counts vmlinux symbols), we go
-        # straight at the modpost invocation that the DDK kernel
-        # tree assembles.
+        # Real fix path. The Ylarod DDK image stripped scripts/Makefile.modpost
+        # so we cannot patch the modpost rule there. Instead, hijack the
+        # modpost binary itself: rename the real one and put a wrapper at
+        # scripts/mod/modpost that fixes up its argv before exec'ing the
+        # real binary.
         #
-        # First step: dump Makefile.modpost so we can see the EXACT
-        # form of the modpost command we need to patch. Once we see
-        # the rule we can write a precise sed.
-        MODPOST_MK="$KDIR/scripts/Makefile.modpost"
-        if [ -f "$MODPOST_MK" ]; then
-          echo "=== $MODPOST_MK content (full) ==="
-          cat "$MODPOST_MK"
-          echo "=== end of Makefile.modpost ==="
-        else
-          echo "WARNING: Makefile.modpost not found at $MODPOST_MK"
-          find "$KDIR" -name 'Makefile.modpost' 2>/dev/null | head -n 5
+        # Specifically, we want to insert "-i $KDIR/Module.symvers" into
+        # the argv. modpost reads each -i file as a symvers index and
+        # uses it to look up CRCs for referenced symbols. The DDK rule
+        # passes "-o ./Module.symvers -i Module.symvers" -- both point at
+        # the same path, modpost truncates on -o open, the -i read finds
+        # an empty file, ____versions[] ends up empty.
+        #
+        # Our wrapper inserts an absolute path to the kernel symvers
+        # AFTER the existing -i so modpost has a real index to consult.
+        # We do NOT remove the original -i so we don't change anything
+        # else about the build.
+        REAL_MODPOST="$KDIR/scripts/mod/modpost"
+        if [ -f "$REAL_MODPOST" ] && [ ! -f "${REAL_MODPOST}.real" ]; then
+          mv "$REAL_MODPOST" "${REAL_MODPOST}.real"
+          cat > "$REAL_MODPOST" <<'MODPOST_WRAPPER'
+#!/bin/sh
+# Inserted -i for the kernel's Module.symvers so OOT modules built
+# via the Ylarod DDK image get a real CRC table populated into their
+# __versions section.
+KDIR_SYMVERS="${KDIR_SYMVERS:-}"
+if [ -n "$KDIR_SYMVERS" ] && [ -s "$KDIR_SYMVERS" ]; then
+    exec "$0.real" -i "$KDIR_SYMVERS" "$@"
+else
+    exec "$0.real" "$@"
+fi
+MODPOST_WRAPPER
+          chmod +x "$REAL_MODPOST"
+          echo "Installed modpost wrapper at $REAL_MODPOST"
+          ls -la "$REAL_MODPOST" "${REAL_MODPOST}.real"
         fi
+        export KDIR_SYMVERS="$KDIR/Module.symvers"
+        echo "KDIR_SYMVERS=$KDIR_SYMVERS"
 
         EXTRA_SYMVERS=""
 
