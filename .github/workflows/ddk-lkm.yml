@@ -110,37 +110,26 @@ jobs:
           echo "WARNING: $AUTOCONF not found; modpost section-mismatch override may not stick"
         fi
 
-        # The Ylarod DDK kernel.makefile invokes modpost with
-        #   scripts/mod/modpost ... -o .../kernel/Module.symvers -i Module.symvers ...
-        # Both -o and -i resolve to the same file. modpost truncates
-        # the output on open, so the input read is empty.
+        # Real fix path. After two indirect attempts (seed file got
+        # truncated; KBUILD_EXTRA_SYMBOLS triggered "exported twice"
+        # because modpost double-counts vmlinux symbols), we go
+        # straight at the modpost invocation that the DDK kernel
+        # tree assembles.
         #
-        # Right fix: feed the kernel's Module.symvers through Kbuild's
-        # documented KBUILD_EXTRA_SYMBOLS hook. That appends an extra
-        # absolute -i path to the modpost command line.
-        #
-        # First attempt failed with "exported twice". Most likely cause:
-        # KDIR/Module.symvers itself contains duplicate entries (e.g.
-        # from the kernel build merging in-tree and dlkm symvers).
-        # Dedup before feeding to modpost.
-        EXTRA_SYMVERS=""
-        if [ -f "$KDIR/Module.symvers" ]; then
-          RAW=/tmp/kdir.symvers.raw
-          OUT=/tmp/kdir.symvers
-          cp "$KDIR/Module.symvers" "$RAW"
-          # Module.symvers format: CRC<TAB>SYMBOL<TAB>FILE<TAB>EXPORT_TYPE
-          # Dedup by symbol name (column 2).
-          awk -F'\t' '!seen[$2]++' "$RAW" > "$OUT"
-          EXTRA_SYMVERS="$OUT"
-          echo "KBUILD_EXTRA_SYMBOLS=$EXTRA_SYMVERS"
-          echo "  raw lines: $(wc -l < "$RAW")"
-          echo "  dedup'd  : $(wc -l < "$OUT")"
-          # Show a sampling of symbols pathmask cares about, post-dedup.
-          for s in register_kretprobe kfree kstrdup snd_compr_free_pages; do
-            n=$(awk -F'\t' -v sym="$s" '$2==sym' "$OUT" | wc -l)
-            echo "  $s appears $n time(s)"
-          done
+        # First step: dump Makefile.modpost so we can see the EXACT
+        # form of the modpost command we need to patch. Once we see
+        # the rule we can write a precise sed.
+        MODPOST_MK="$KDIR/scripts/Makefile.modpost"
+        if [ -f "$MODPOST_MK" ]; then
+          echo "=== $MODPOST_MK content (full) ==="
+          cat "$MODPOST_MK"
+          echo "=== end of Makefile.modpost ==="
+        else
+          echo "WARNING: Makefile.modpost not found at $MODPOST_MK"
+          find "$KDIR" -name 'Makefile.modpost' 2>/dev/null | head -n 5
         fi
+
+        EXTRA_SYMVERS=""
 
         # KCFLAGS is the Kbuild-blessed "user cflags" append knob, applied
         # AFTER everything else. Setting -fno-lto / -fno-sanitize=cfi here
