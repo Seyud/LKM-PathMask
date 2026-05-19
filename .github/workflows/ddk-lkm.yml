@@ -152,6 +152,52 @@ jobs:
           fi
         done
 
+        # Pick readelf for the diagnostics below.
+        if command -v llvm-readelf >/dev/null 2>&1; then RE2=llvm-readelf
+        elif command -v readelf >/dev/null 2>&1; then RE2=readelf
+        else RE2=""; fi
+
+        echo
+        echo "=== Undefined (UND) symbols in pathmask.lto.o ==="
+        echo "(modpost looks these up in KDIR/Module.symvers to populate __versions)"
+        if [ -n "$RE2" ]; then
+          $RE2 -s pathmask.lto.o 2>&1 | awk '/UND/ && $NF !~ /^$/ {print $NF}' | sort -u | head -n 80
+          echo "..."
+          echo "Total UND symbols: $($RE2 -s pathmask.lto.o 2>&1 | awk '/UND/ {n++} END {print n+0}')"
+        fi
+
+        echo
+        echo "=== pathmask.mod.c (modpost-generated CRC stub) ==="
+        if [ -f pathmask.mod.c ]; then
+          echo "-- file size --"
+          wc -l pathmask.mod.c
+          echo "-- ____versions array --"
+          awk '/____versions/{flag=1} flag; /^};/{if(flag){print; flag=0}}' pathmask.mod.c
+          echo "-- end of file --"
+          tail -n 30 pathmask.mod.c
+        else
+          echo "(pathmask.mod.c not present)"
+        fi
+
+        echo
+        echo "=== modpost cmdline (from .Module.symvers.cmd) ==="
+        if [ -f .Module.symvers.cmd ]; then
+          cat .Module.symvers.cmd
+        else
+          echo "(no .Module.symvers.cmd)"
+        fi
+
+        echo
+        echo "=== Sample lookup: are pathmask's symbols in KDIR/Module.symvers? ==="
+        for sym in register_kretprobe kfree _printk printk kmalloc kstrdup; do
+          if grep -q "[[:space:]]${sym}[[:space:]]" "$KDIR/Module.symvers" 2>/dev/null; then
+            crc=$(grep "[[:space:]]${sym}[[:space:]]" "$KDIR/Module.symvers" | head -n 1 | awk '{print $1}')
+            echo "  $sym -> $crc"
+          else
+            echo "  $sym -> NOT in KDIR/Module.symvers"
+          fi
+        done
+
         mkdir -p /github/workspace/out
         OUTPUT_NAME="${{ inputs.kmi }}_pathmask.ko"
 
