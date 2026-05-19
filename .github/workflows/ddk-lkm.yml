@@ -110,11 +110,47 @@ jobs:
           echo "WARNING: $AUTOCONF not found; modpost section-mismatch override may not stick"
         fi
 
+        # KCFLAGS is the Kbuild-blessed "user cflags" append knob, applied
+        # AFTER everything else. Setting -fno-lto / -fno-sanitize=cfi here
+        # guarantees they win over any earlier -flto=thin / -fsanitize=cfi
+        # that auto.conf-driven Kbuild assembly might inject. Filtering in
+        # kernel/Kbuild has not been enough on the 5.10 DDK toolchain
+        # because CC_FLAGS_LTO is appended *after* our Kbuild fragment
+        # is read.
+        export KCFLAGS="-fno-lto -fno-sanitize=cfi"
+        echo "KCFLAGS=$KCFLAGS"
+
         KBUILD_MODPOST_WARN=1 \
         CONFIG_SECTION_MISMATCH_WARN_ONLY=y \
         CONFIG_KSU=m CC=clang \
           make
         echo "=== Build completed ==="
+
+        echo
+        echo "=== Compiler command actually used (from .pathmask.o.cmd) ==="
+        if [ -f .pathmask.o.cmd ]; then
+          # The .cmd file is a single very long line; wrap for readability.
+          tr ' ' '\n' < .pathmask.o.cmd | head -n 200
+          echo "..."
+          echo "-- LTO/CFI flags seen by cc --"
+          tr ' ' '\n' < .pathmask.o.cmd | grep -E -- '-flto|sanitize|fvisibility|fsplit-lto-unit|cfi' || echo "(none -- good)"
+        else
+          echo "(.pathmask.o.cmd not present)"
+        fi
+
+        if [ -f .pathmask.lto.o.cmd ]; then
+          echo
+          echo "=== Linker command for the .lto.o step ==="
+          tr ' ' '\n' < .pathmask.lto.o.cmd | head -n 60
+        fi
+
+        echo
+        echo "=== file(1) verdict on intermediate objects ==="
+        for f in pathmask.o pathmask.lto.o pathmask.ko; do
+          if [ -f "$f" ]; then
+            echo "$f: $(file "$f")"
+          fi
+        done
 
         mkdir -p /github/workspace/out
         OUTPUT_NAME="${{ inputs.kmi }}_pathmask.ko"
