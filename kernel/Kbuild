@@ -4,4 +4,36 @@ ccflags-y += -Wno-strict-prototypes -Wno-int-conversion
 ccflags-y += -Wno-gcc-compat -Wno-missing-prototypes
 ccflags-y += -Wno-declaration-after-statement -Wno-unused-function
 
+# Disable LTO for this OOT module.
+#
+# All GKI 5.x / 6.x Android-common kernels enable CONFIG_LTO_CLANG_THIN.
+# With LTO on, Kbuild produces an intermediate bitcode <module>.lto.o
+# before MODPOST runs:
+#
+#   CC [M]  pathmask.o
+#   LTO [M] pathmask.lto.o
+#   MODPOST Module.symvers
+#
+# MODPOST extracts undefined symbol references by walking the ELF
+# relocation tables of the input objects and looking each one up in
+# KDIR/Module.symvers to copy its CRC into the ko's __versions section.
+# Bitcode .lto.o files don't carry those relocations, so MODPOST sees
+# zero references, writes a zero-byte __versions, and emits a ko whose
+# modversions table is empty. The kernel then accepts (or, on KSU,
+# tolerates) such a module with at most a "no symbol version for
+# module_layout" warning, which means insmod succeeds even when the ko
+# was built against a kernel whose struct layouts differ from the live
+# kernel. On hardened OEM builds (CFI_CLANG=y, SHADOW_CALL_STACK=y)
+# that mismatch can panic the device during the first kretprobe
+# registration.
+#
+# Filtering CC_FLAGS_LTO out of KBUILD_CFLAGS / KBUILD_LDFLAGS makes
+# this OOT module compile and link as plain ELF, so MODPOST sees real
+# relocations and populates __versions with valid CRCs from
+# KDIR/Module.symvers.
+ifdef CONFIG_LTO_CLANG
+KBUILD_CFLAGS  := $(filter-out $(CC_FLAGS_LTO),$(KBUILD_CFLAGS))
+KBUILD_LDFLAGS := $(filter-out $(CC_LDFLAGS_LTO),$(KBUILD_LDFLAGS))
+endif
+
 # Keep a new line here!! Because someone may append config
