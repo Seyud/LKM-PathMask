@@ -82,7 +82,15 @@ jobs:
         echo
         echo "=== Building pathmask.ko for KMI: ${{ inputs.kmi }} ==="
         cd kernel
-        CONFIG_KSU=m CC=clang make
+
+        # KBUILD_MODPOST_WARN=1 must be set in the make environment
+        # (kernel/Kbuild's `export` is too late; modpost runs from
+        # the outer kbuild before our Kbuild fragment is read).
+        # It demotes the modpost "Section mismatches detected" error
+        # to a warning, which we need because clang still emits
+        # __cfi_jt_<sym> aliases in .data even with our -fno-lto /
+        # -fno-sanitize=cfi flags on this DDK toolchain.
+        KBUILD_MODPOST_WARN=1 CONFIG_KSU=m CC=clang make
         echo "=== Build completed ==="
 
         mkdir -p /github/workspace/out
