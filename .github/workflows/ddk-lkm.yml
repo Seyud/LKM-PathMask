@@ -130,21 +130,26 @@ jobs:
         REAL_MODPOST="$KDIR/scripts/mod/modpost"
         if [ -f "$REAL_MODPOST" ] && [ ! -f "${REAL_MODPOST}.real" ]; then
           mv "$REAL_MODPOST" "${REAL_MODPOST}.real"
-          cat > "$REAL_MODPOST" <<'MODPOST_WRAPPER'
-#!/bin/sh
-# Inserted -i for the kernel's Module.symvers so OOT modules built
-# via the Ylarod DDK image get a real CRC table populated into their
-# __versions section.
-KDIR_SYMVERS="${KDIR_SYMVERS:-}"
-if [ -n "$KDIR_SYMVERS" ] && [ -s "$KDIR_SYMVERS" ]; then
-    exec "$0.real" -i "$KDIR_SYMVERS" "$@"
-else
-    exec "$0.real" "$@"
-fi
-MODPOST_WRAPPER
+          # Build the wrapper without a heredoc -- YAML's `run: |` would
+          # break on a body line whose indent is shallower than the
+          # surrounding shell commands.
+          {
+            printf '%s\n' '#!/bin/sh'
+            printf '%s\n' '# pathmask CI shim. Inserts -i KDIR/Module.symvers ahead of the'
+            printf '%s\n' '# original argv so modpost has a vmlinux CRC index to consult.'
+            printf '%s\n' 'KDIR_SYMVERS="${KDIR_SYMVERS:-}"'
+            printf '%s\n' 'if [ -n "$KDIR_SYMVERS" ] && [ -s "$KDIR_SYMVERS" ]; then'
+            printf '%s\n' '    exec "$0.real" -i "$KDIR_SYMVERS" "$@"'
+            printf '%s\n' 'else'
+            printf '%s\n' '    exec "$0.real" "$@"'
+            printf '%s\n' 'fi'
+          } > "$REAL_MODPOST"
           chmod +x "$REAL_MODPOST"
           echo "Installed modpost wrapper at $REAL_MODPOST"
           ls -la "$REAL_MODPOST" "${REAL_MODPOST}.real"
+          echo "--- wrapper contents ---"
+          cat "$REAL_MODPOST"
+          echo "--- end wrapper ---"
         fi
         export KDIR_SYMVERS="$KDIR/Module.symvers"
         echo "KDIR_SYMVERS=$KDIR_SYMVERS"
