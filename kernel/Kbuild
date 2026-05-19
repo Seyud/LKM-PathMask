@@ -56,8 +56,10 @@ endif
 # even if the filtered variable name above is empty (some kernel
 # trees define neither CC_FLAGS_CFI nor CFLAGS_CFI but inherit
 # -fsanitize=cfi from KCFLAGS).
+#
+# These are CC flags only -- never pass them to ld.lld, which does
+# not understand -fno-lto / -fno-sanitize=cfi.
 ccflags-y += -fno-lto -fno-sanitize=cfi
-ldflags-y += -fno-lto
 
 # Some GKI builds run modpost in -W (error on section mismatch) mode.
 # Even with LTO and CFI off, clang at -O2 against the DDK headers can
