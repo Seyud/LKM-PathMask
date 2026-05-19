@@ -34,23 +34,37 @@ ccflags-y += -Wno-declaration-after-statement -Wno-unused-function
 # and is not aware of jump tables coming from an OOT module, so the
 # generated jt entries are dead weight at best, mis-typed at worst.
 #
-# Filtering CC_FLAGS_LTO / CC_FLAGS_CFI / CC_LDFLAGS_LTO out of
-# KBUILD_*FLAGS makes this OOT module compile and link as a plain
-# relocatable ELF without CFI metadata. MODPOST then sees real
-# relocations and populates __versions with valid CRCs from
-# KDIR/Module.symvers. The rest of the kernel still builds with LTO
-# and CFI -- this is a per-module override only.
+# Filter LTO + CFI flags out of KBUILD_*FLAGS for this OOT module.
 #
-# We filter against both the modern (CC_FLAGS_*) and legacy
-# (CFLAGS_*) variable names because Android-common Kbuild renamed
-# them between 5.10 and 5.15.
-ifdef CONFIG_LTO_CLANG
-KBUILD_CFLAGS  := $(filter-out $(CC_FLAGS_LTO)  $(CFLAGS_LTO),$(KBUILD_CFLAGS))
-KBUILD_LDFLAGS := $(filter-out $(CC_LDFLAGS_LTO) $(LDFLAGS_LTO),$(KBUILD_LDFLAGS))
-endif
-ifdef CONFIG_CFI_CLANG
-KBUILD_CFLAGS  := $(filter-out $(CC_FLAGS_CFI)  $(CFLAGS_CFI),$(KBUILD_CFLAGS))
-endif
+# We do NOT guard with `ifdef CONFIG_LTO_CLANG`: those .config-derived
+# variables are only reliably visible in the in-tree build, and OOT
+# modules sometimes get a Kbuild-context where they evaluate to empty
+# even though the kernel itself was built with LTO/CFI on. An
+# unconditional filter-out is safe: filtering an empty pattern out is
+# a no-op, and filtering an active flag out is exactly what we need.
+#
+# We filter both:
+#   * the canonical Kbuild variable names (CC_FLAGS_LTO, CFLAGS_LTO,
+#     CC_FLAGS_CFI, CFLAGS_CFI) -- their contents differ between 5.10
+#     and 5.15 but Kbuild gives them to us by inheritance/export;
+#   * the literal flag strings, in case the variables are empty here
+#     but the flags landed in KBUILD_CFLAGS via some other path.
+KBUILD_CFLAGS := $(filter-out $(CC_FLAGS_LTO) $(CFLAGS_LTO) \
+                              $(CC_FLAGS_CFI) $(CFLAGS_CFI), \
+                              $(KBUILD_CFLAGS))
+KBUILD_CFLAGS := $(filter-out -flto -flto=thin -flto=full -fsplit-lto-unit \
+                              -fvisibility=default \
+                              -fsanitize=cfi -fsanitize=cfi-mfcall \
+                              -fsanitize=cfi-icall \
+                              -fsanitize-cfi-cross-dso \
+                              -fno-sanitize-cfi-canonical-jump-tables \
+                              -fno-sanitize-trap=cfi \
+                              -fno-sanitize-blacklist \
+                              -fsanitize-recover=cfi, \
+                              $(KBUILD_CFLAGS))
+KBUILD_LDFLAGS := $(filter-out $(CC_LDFLAGS_LTO) $(LDFLAGS_LTO) \
+                               --lto-O0 --lto-O1 --lto-O2 --lto-O3, \
+                               $(KBUILD_LDFLAGS))
 
 # Belt-and-suspenders: make sure clang itself sees the off switches
 # even if the filtered variable name above is empty (some kernel
@@ -61,13 +75,9 @@ endif
 # not understand -fno-lto / -fno-sanitize=cfi.
 ccflags-y += -fno-lto -fno-sanitize=cfi
 
-# Some GKI builds run modpost in -W (error on section mismatch) mode.
-# Even with LTO and CFI off, clang at -O2 against the DDK headers can
-# still emit section-mismatch-shaped artefacts that modpost rejects.
-# Demote those to warnings so the build still produces a ko whose
-# __versions is populated. Real safety lives in the modversions CRC
-# table the kernel checks at insmod time.
-KBUILD_MODPOST_WARN := 1
-export KBUILD_MODPOST_WARN
+# (KBUILD_MODPOST_WARN does not exist in 5.10's Makefile.modpost; we
+# pass CONFIG_SECTION_MISMATCH_WARN_ONLY=y on the make command line in
+# CI instead. The variable is still useful on 5.15+ kernels, so leave
+# the comment block but no longer set it here.)
 
 # Keep a new line here!! Because someone may append config

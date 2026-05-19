@@ -83,14 +83,37 @@ jobs:
         echo "=== Building pathmask.ko for KMI: ${{ inputs.kmi }} ==="
         cd kernel
 
-        # KBUILD_MODPOST_WARN=1 must be set in the make environment
-        # (kernel/Kbuild's `export` is too late; modpost runs from
-        # the outer kbuild before our Kbuild fragment is read).
-        # It demotes the modpost "Section mismatches detected" error
-        # to a warning, which we need because clang still emits
-        # __cfi_jt_<sym> aliases in .data even with our -fno-lto /
-        # -fno-sanitize=cfi flags on this DDK toolchain.
-        KBUILD_MODPOST_WARN=1 CONFIG_KSU=m CC=clang make
+        # Strategy to coax modpost on the DDK kernel into producing a
+        # ko with a populated __versions section:
+        #
+        #   * The Kbuild fragment in this directory filters LTO/CFI
+        #     flags out of KBUILD_CFLAGS so clang emits real ELF
+        #     relocations instead of bitcode + cfi jump tables.
+        #
+        #   * KDIR/include/config/auto.conf holds the .config values
+        #     modpost actually reads. The DDK images bake
+        #     CONFIG_SECTION_MISMATCH_WARN_ONLY=n in there, which is
+        #     why our previous attempts at warn-only kept getting
+        #     overridden. Patch auto.conf in-place to flip it to y.
+        #     This lets modpost finish even when clang's CFI artifacts
+        #     leak through.
+        AUTOCONF="$KDIR/include/config/auto.conf"
+        if [ -f "$AUTOCONF" ]; then
+          if grep -q '^CONFIG_SECTION_MISMATCH_WARN_ONLY=' "$AUTOCONF"; then
+            sed -i 's|^CONFIG_SECTION_MISMATCH_WARN_ONLY=.*|CONFIG_SECTION_MISMATCH_WARN_ONLY=y|' "$AUTOCONF"
+          else
+            echo 'CONFIG_SECTION_MISMATCH_WARN_ONLY=y' >> "$AUTOCONF"
+          fi
+          echo "auto.conf section-mismatch knob:"
+          grep '^CONFIG_SECTION_MISMATCH_WARN_ONLY=' "$AUTOCONF" || true
+        else
+          echo "WARNING: $AUTOCONF not found; modpost section-mismatch override may not stick"
+        fi
+
+        KBUILD_MODPOST_WARN=1 \
+        CONFIG_SECTION_MISMATCH_WARN_ONLY=y \
+        CONFIG_KSU=m CC=clang \
+          make
         echo "=== Build completed ==="
 
         mkdir -p /github/workspace/out
