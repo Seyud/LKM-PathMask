@@ -82,7 +82,7 @@ jobs:
 
           NOTES="Automated PathMask build for ${GITHUB_SHA}."
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" $PRERELEASE_FLAG --latest=false
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" $PRERELEASE_FLAG --latest=false --draft=false
           else
             gh release create "$TAG" --title "$TITLE" --notes "$NOTES" $PRERELEASE_FLAG --latest=false
           fi
