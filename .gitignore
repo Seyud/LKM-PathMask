@@ -12,3 +12,11 @@
 out/
 *.zip
 
+# Editor / IDE state
+.vscode/
+
+# Abandoned bpf phase-1 worktree (history preserved at SHA 4e02182)
+/bpf/
+
+# Local cleanup helpers (transient)
+/.lkm-cleanup-*.ps1
