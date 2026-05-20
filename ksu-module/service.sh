@@ -8,7 +8,6 @@ KO_NAME=pathmask.ko
 KO_PATH="$MODDIR/$KO_NAME"
 PERSIST_DIR="/data/adb/pathmask"
 LEGACY_PERSIST_DIR="/data/adb/nohello"
-DEFAULTS_MARKER="$PERSIST_DIR/.defaults_v1_seeded"
 LOAD_FAIL_COUNT_PATH="$PERSIST_DIR/load_fail_count"
 LOAD_FAIL_REASON_PATH="$PERSIST_DIR/load_fail_reason"
 LOAD_FAIL_LIMIT=3
@@ -28,13 +27,6 @@ DENY_UIDS_CONFIG="$PERSIST_DIR/deny_uids.conf"
 DENY_PACKAGES_CONFIG="$PERSIST_DIR/deny_packages.conf"
 TARGET_WAIT_SECONDS_CONFIG="$PERSIST_DIR/target_wait_seconds.conf"
 PACKAGE_WAIT_SECONDS_CONFIG="$PERSIST_DIR/package_wait_seconds.conf"
-
-DEFAULT_TARGET_PATH_1="/dev/cpuset/scene-daemon"
-DEFAULT_TARGET_PATH_2="/dev/scene"
-DEFAULT_TARGET_PATH_3="/system_ext/app/SoterService"
-DEFAULT_DENY_PACKAGE_1="com.chunqiunativecheck"
-DEFAULT_DENY_PACKAGE_2="com.eltavine.duckdetector"
-DEFAULT_DENY_PACKAGE_3="luna.safe.luna"
 
 TARGET_PATHS=""
 HIDE_DIRENTS=1
@@ -115,54 +107,6 @@ seed_config_file() {
 	printf '%s\n' "$DEFAULT_VALUE" > "$DEST"
 }
 
-seed_target_config() {
-	DEST="$1"
-	SRC="$2"
-
-	if [ -f "$DEST" ]; then
-		return
-	fi
-
-	if [ -f "$SRC" ]; then
-		cp "$SRC" "$DEST" 2>/dev/null && return
-	fi
-
-	printf '%s\n' \
-		"$DEFAULT_TARGET_PATH_1" \
-		"$DEFAULT_TARGET_PATH_2" \
-		"$DEFAULT_TARGET_PATH_3" > "$DEST"
-}
-
-seed_deny_packages_config() {
-	DEST="$1"
-	SRC="$2"
-
-	if [ -f "$DEST" ]; then
-		return
-	fi
-
-	if [ -f "$SRC" ]; then
-		cp "$SRC" "$DEST" 2>/dev/null && return
-	fi
-
-	printf '%s\n' \
-		"$DEFAULT_DENY_PACKAGE_1" \
-		"$DEFAULT_DENY_PACKAGE_2" \
-		"$DEFAULT_DENY_PACKAGE_3" > "$DEST"
-}
-
-ensure_config_line() {
-	DEST="$1"
-	LINE="$2"
-
-	[ -n "$LINE" ] || return
-	[ -f "$DEST" ] || : > "$DEST"
-
-	if ! grep -Fxq "$LINE" "$DEST" 2>/dev/null; then
-		printf '%s\n' "$LINE" >> "$DEST"
-	fi
-}
-
 migrate_legacy_config() {
 	[ -d "$PERSIST_DIR" ] && return
 	[ -d "$LEGACY_PERSIST_DIR" ] || return
@@ -193,26 +137,13 @@ init_persistent_config() {
 	fi
 
 	chmod 0700 "$PERSIST_DIR" 2>/dev/null || true
-	seed_target_config "$CONFIG_PATH" "$MOD_CONFIG_PATH"
+	seed_config_file "$CONFIG_PATH" "$MOD_CONFIG_PATH" ""
 	seed_config_file "$HIDE_DIRENTS_CONFIG" "$MOD_HIDE_DIRENTS_CONFIG" "1"
 	seed_config_file "$SCOPE_MODE_CONFIG" "$MOD_SCOPE_MODE_CONFIG" "deny"
 	seed_config_file "$DENY_UIDS_CONFIG" "$MOD_DENY_UIDS_CONFIG" ""
-	seed_deny_packages_config "$DENY_PACKAGES_CONFIG" "$MOD_DENY_PACKAGES_CONFIG"
+	seed_config_file "$DENY_PACKAGES_CONFIG" "$MOD_DENY_PACKAGES_CONFIG" ""
 	seed_config_file "$TARGET_WAIT_SECONDS_CONFIG" "$MOD_TARGET_WAIT_SECONDS_CONFIG" "90"
 	seed_config_file "$PACKAGE_WAIT_SECONDS_CONFIG" "$MOD_PACKAGE_WAIT_SECONDS_CONFIG" "90"
-
-	if [ ! -f "$DEFAULTS_MARKER" ]; then
-		ensure_config_line "$CONFIG_PATH" "$DEFAULT_TARGET_PATH_1"
-		ensure_config_line "$CONFIG_PATH" "$DEFAULT_TARGET_PATH_2"
-		ensure_config_line "$CONFIG_PATH" "$DEFAULT_TARGET_PATH_3"
-		ensure_config_line "$DENY_PACKAGES_CONFIG" "$DEFAULT_DENY_PACKAGE_1"
-		ensure_config_line "$DENY_PACKAGES_CONFIG" "$DEFAULT_DENY_PACKAGE_2"
-		ensure_config_line "$DENY_PACKAGES_CONFIG" "$DEFAULT_DENY_PACKAGE_3"
-		if [ ! -s "$SCOPE_MODE_CONFIG" ]; then
-			printf '%s\n' "deny" > "$SCOPE_MODE_CONFIG"
-		fi
-		touch "$DEFAULTS_MARKER" 2>/dev/null || true
-	fi
 }
 
 add_target_path() {
@@ -502,12 +433,6 @@ if [ -f "$CONFIG_PATH" ]; then
 		esac
 		add_target_path "$CONFIG_LINE"
 	done < "$CONFIG_PATH"
-fi
-
-if [ -z "$TARGET_PATHS" ]; then
-	add_target_path "$DEFAULT_TARGET_PATH_1"
-	add_target_path "$DEFAULT_TARGET_PATH_2"
-	add_target_path "$DEFAULT_TARGET_PATH_3"
 fi
 
 if [ -f "$HIDE_DIRENTS_CONFIG" ]; then
