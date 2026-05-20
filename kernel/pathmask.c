@@ -82,6 +82,30 @@ typedef void (*pm_path_put_t)(const struct path *path);
 static pm_kern_path_t pm_kern_path;
 static pm_path_put_t pm_path_put;
 
+/*
+ * On Android GKI builds with CONFIG_CFI_CLANG=y the indirect call below
+ * would otherwise be checked against the CFI jump table. kprobe gives us
+ * the raw function body address (not the jump-table entry), so the call
+ * fails CFI verification and the kernel panics silently before pstore
+ * can persist the trace. Wrap the indirect calls in __nocfi helpers so
+ * only these two sites bypass the type-id check; the rest of the module
+ * keeps full CFI coverage.
+ */
+#ifndef __nocfi
+#define __nocfi
+#endif
+
+static int __nocfi pm_invoke_kern_path(const char *name, unsigned int flags,
+				       struct path *path)
+{
+	return pm_kern_path(name, flags, path);
+}
+
+static void __nocfi pm_invoke_path_put(const struct path *path)
+{
+	pm_path_put(path);
+}
+
 static unsigned long resolve_kernel_symbol_addr(const char *symbol_name)
 {
 	struct kprobe kp = {
@@ -274,7 +298,7 @@ static int add_target_path(const char *path_name)
 	if (!pm_kern_path || !pm_path_put)
 		return -ENOENT;
 
-	ret = pm_kern_path(path_name, LOOKUP_FOLLOW, &path);
+	ret = pm_invoke_kern_path(path_name, LOOKUP_FOLLOW, &path);
 	if (ret) {
 		pr_warn(PM_LOG_PREFIX "%s not found (err=%d), skip\n",
 			path_name, ret);
@@ -283,7 +307,7 @@ static int add_target_path(const char *path_name)
 
 	inode = d_inode(path.dentry);
 	if (!inode || !inode->i_sb) {
-		pm_path_put(&path);
+		pm_invoke_path_put(&path);
 		pr_warn(PM_LOG_PREFIX "%s has no inode, skip\n", path_name);
 		return -ENOENT;
 	}
@@ -297,7 +321,7 @@ static int add_target_path(const char *path_name)
 		MAJOR(targets[target_count].dev),
 		MINOR(targets[target_count].dev));
 	target_count++;
-	pm_path_put(&path);
+	pm_invoke_path_put(&path);
 
 	return 0;
 }
