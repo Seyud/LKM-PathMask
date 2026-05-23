@@ -39,8 +39,7 @@ const LOG_PAGE_LINES = 80;
 
 const DEFAULT_TARGET_PATHS = [
 	"/dev/cpuset/scene-daemon",
-	"any:scene:/dev/scene",
-	"any:scene:dir:/dev/???/scene_mode_category",
+	"dir:/dev/???/scene_mode_category",
 	"/system_ext/app/SoterService",
 ];
 

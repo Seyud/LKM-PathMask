@@ -1,3 +1,23 @@
+# PathMask 2.3.0
+
+## 解决了什么
+
+- 修复 v2.2.8/v2.2.9 的 update 链接问题：客户端显示 2.2.9 可更新但实际下载到的是 2.2.8 的 zip。原因是 `pathmask-latest` 滚动 release 在 tag 推送时不会被同步刷新，stale 资产留了下来。打包 workflow 现在在打 tag 时会同时更新 tag 和 `pathmask-latest`，资产永远跟最新 commit 一致。
+- 简化默认配置。实测发现 `dir:/dev/???/scene_mode_category` 这一条 glob 通配既能命中 Scene 9.3+ 的随机 hash 路径，也能命中 Scene 8.x 的固定 `/dev/scene/scene_mode_category`（因为 `/dev/scene` 本身就是个目录，结构跟 9.3 同构），所以原先并列的 `any:scene:/dev/scene` 行实际上是冗余的，连带 `any:scene:` 分组也只剩一个成员失去了 OR 的意义。
+
+## 默认配置变化
+
+- `target_path.conf` 从 4 行精简到 3 行：
+  - `/dev/cpuset/scene-daemon`
+  - `dir:/dev/???/scene_mode_category`（覆盖所有 Scene 版本）
+  - `/system_ext/app/SoterService`
+- 升级路径：v2.2.0 - v2.2.9 各版本的「**未改动过的默认配置**」会自动迁移到新模板，对自定义过的配置不会有任何影响。要主动取回新默认，可以在 WebUI 中点「恢复默认配置」。
+
+## 其他
+
+- `any:<组名>:` 语法本身保留，未来仍可用于真正需要 OR 兜底的场景。
+- 内核模块未变化，本次升级是配置层 + 发布管线层的精修。
+
 # PathMask 2.2.9
 
 ## 解决了什么

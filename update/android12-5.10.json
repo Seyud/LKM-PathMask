@@ -1,6 +1,6 @@
 ﻿{
-    "version":  "2.2.9",
-    "versionCode":  20,
+    "version":  "2.3.0",
+    "versionCode":  30,
     "zipUrl":  "https://github.com/Andrea-lyz/LKM-PathMask/releases/download/pathmask-latest/android12-5.10_pathmask-ksu.zip",
     "changelog":  "https://raw.githubusercontent.com/Andrea-lyz/LKM-PathMask/main/update/changelog.md"
 }

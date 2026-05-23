@@ -76,23 +76,52 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Determine primary release target.
+          # - On a tag push (refs/tags/v*) we publish to the immutable
+          #   tag release AND mirror to the rolling pathmask-latest
+          #   release, so update.json clients (which point at
+          #   pathmask-latest) always get assets matching the most
+          #   recent tagged commit.
+          # - On a main push we only publish to pathmask-latest.
+          # In both cases publish_targets is a space-separated list of
+          # release tags to receive identical assets.
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF_NAME}"
-            TITLE="PathMask ${GITHUB_REF_NAME}"
-            PRERELEASE_FLAG=""
+            PRIMARY_TAG="${GITHUB_REF_NAME}"
+            PUBLISH_TARGETS="${PRIMARY_TAG} pathmask-latest"
           else
-            TAG="pathmask-latest"
-            TITLE="PathMask latest"
-            PRERELEASE_FLAG="--prerelease"
-            git tag -f "$TAG" "$GITHUB_SHA"
-            git push origin "refs/tags/$TAG" --force
+            PRIMARY_TAG="pathmask-latest"
+            PUBLISH_TARGETS="pathmask-latest"
+            # Force-move the rolling tag onto the new commit so the
+            # release page shows the right SHA.
+            git tag -f "pathmask-latest" "$GITHUB_SHA"
+            git push origin "refs/tags/pathmask-latest" --force
           fi
 
           NOTES="Automated PathMask build for ${GITHUB_SHA}."
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" $PRERELEASE_FLAG --latest=false --draft=false
-          else
-            gh release create "$TAG" --title "$TITLE" --notes "$NOTES" $PRERELEASE_FLAG --latest=false
-          fi
 
-          gh release upload "$TAG" release-upload/* --clobber
+          for TAG in $PUBLISH_TARGETS; do
+            if [ "$TAG" = "pathmask-latest" ]; then
+              TITLE="PathMask latest"
+              PRERELEASE_FLAG="--prerelease"
+            else
+              TITLE="PathMask ${TAG}"
+              PRERELEASE_FLAG=""
+            fi
+
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release edit "$TAG" \
+                --title "$TITLE" \
+                --notes "$NOTES" \
+                $PRERELEASE_FLAG \
+                --latest=false \
+                --draft=false
+            else
+              gh release create "$TAG" \
+                --title "$TITLE" \
+                --notes "$NOTES" \
+                $PRERELEASE_FLAG \
+                --latest=false
+            fi
+
+            gh release upload "$TAG" release-upload/* --clobber
+          done

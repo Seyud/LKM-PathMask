@@ -214,8 +214,7 @@
 				<p>任意一段路径名（不跨 <code>/</code>），等价于 shell <code>*</code> 但写起来不会被误读。例如 <code>/dev/???/scene_mode_category</code> 会命中 <code>/dev/asldpx_c/scene_mode_category</code>、<code>/dev/xcscvgtp/scene_mode_category</code> 等任意 8 字符随机父目录。</p>
 
 				<h3>组</h3>
-				<p>可选 OR 分组名。同名组内只要任一行命中即视为该组满足，所有未分组的行仍需各自存在。常用于「Scene 8.x 旧路径 OR Scene 9.3+ 随机路径」这种「两套同效」的兼容配置。</p>
-				<p>默认配置示例：<code>/dev/scene</code> 与 <code>/dev/???/scene_mode_category</code> 同属 <code>scene</code> 组，无论装的是哪一版 Scene 都能开机即时放行加载，没装 Scene 也不会因等待这两条而拖慢启动。</p>
+				<p>可选 OR 分组名。同名组内只要任一行命中即视为该组满足，所有未分组的行仍需各自存在。适用于「老路径 OR 新路径」这类「两套同效」的兼容配置，启动时只要任一路径出现就立即加载，没出现也不会因为等其中某一条而拖慢开机。</p>
 
 				<h3>父级</h3>
 				<p>勾选后，命中的不是这条路径本身而是它的<strong>父目录</strong>。配合 <code>???</code> 通配能把整段随机父目录连同其所有子项一并隐藏，封死「文件存在性边信道」类检测（<code>access</code>/<code>mkdir</code>/<code>stat</code> 三连击全部返回 <code>ENOENT</code>）。</p>

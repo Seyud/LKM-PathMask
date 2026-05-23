@@ -236,17 +236,26 @@ init_persistent_config() {
 	# its exact byte content via sha1sum), refresh that file from
 	# the current template. Customised configs are never touched.
 	#
-	# Hashes correspond to v2.2.0 - v2.2.7 defaults. Both with-
-	# and without-trailing-newline variants are listed because
-	# different releases in that range produced both shapes.
+	# target_path.conf hash list, from oldest to newest:
+	#   - 6d0cc6.../c4a3da... : v2.2.0 - v2.2.7 default
+	#       (3 lines: scene-daemon / scene / SoterService)
+	#   - 14532d.../038f2e... : v2.2.8 - v2.2.9 default
+	#       (4 lines with `any:scene:` group)
+	# deny_packages.conf:
+	#   - 7ad1d9.../8b2b84... : v2.2.0 - v2.2.7 default
+	#       (3 packages, no holmes)
+	#   - b062c1.../27f6e8... : v2.2.8 - v2.2.9 default
+	#       (4 packages, with holmes)
+	# Each hash has both with-trailing-newline and without variants
+	# to cover the slight format drift between releases.
 	migrate_known_default \
 		"$CONFIG_PATH" \
 		"$MOD_CONFIG_PATH" \
-		"6d0cc64350e72f06456c80db047088531f5dc757,c4a3dabda772d3f3a4587f3a823beb1273eb6bce"
+		"6d0cc64350e72f06456c80db047088531f5dc757,c4a3dabda772d3f3a4587f3a823beb1273eb6bce,14532d2af9980c1bae7a7462e27d9bdeededc82b,038f2eddd3228e34cc9173db41300647fdbce245"
 	migrate_known_default \
 		"$DENY_PACKAGES_CONFIG" \
 		"$MOD_DENY_PACKAGES_CONFIG" \
-		"7ad1d966a10590d44d8a1eb76176009f8e4a184d,8b2b84a4ffcb85e3cfca84079dd5468defd3e173"
+		"7ad1d966a10590d44d8a1eb76176009f8e4a184d,8b2b84a4ffcb85e3cfca84079dd5468defd3e173,b062c10729966081b41d0e68f1dca051a0f0a522,27f6e8114e83d0d25134aa83d760da1944b3b884"
 
 	seed_config_file "$CONFIG_PATH" "$MOD_CONFIG_PATH" ""
 	seed_config_file "$HIDE_DIRENTS_CONFIG" "$MOD_HIDE_DIRENTS_CONFIG" "1"
