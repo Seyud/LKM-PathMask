@@ -1,3 +1,15 @@
+# PathMask 2.2.9
+
+## 解决了什么
+
+- 修复 v2.2.8 全新刷入后默认配置缺失的问题。`tools/package_ksu.sh` 的硬编码默认值覆盖了模块仓库中 `ksu-module/target_path.conf` 的 4 行配置，导致 Release 包内的 `target_path.conf` 只有旧的 3 行（没有 Scene 9.3+ 的 `any:scene:dir:/dev/???/scene_mode_category`）。`deny_packages.conf` 也缺少 `me.garfieldhan.holmes`。打包脚本现在以 `ksu-module/` 中的文件为唯一真实来源，仅在调用方显式传入环境变量时才覆盖。
+- 修复从旧版升级到 2.2.8 时不会获得新默认配置的问题。开机脚本会用 SHA1 识别"原封未改的旧默认值"并自动迁移到当前模板；用户自定义过的配置永远不会被改动。
+
+## 升级行为
+
+- 已安装 v2.2.0 - v2.2.7 且**没有改过** `target_path.conf` / `deny_packages.conf` 的用户：升到 2.2.9 后会自动获得新默认（`any:scene:` 分组路径 + `me.garfieldhan.holmes`）。
+- 已经手动改过这两个文件的用户：保持原样不变。要主动获取新默认，请在 WebUI 中点「恢复默认配置」。
+
 # PathMask 2.2.8
 
 ## 解决了什么

@@ -159,6 +159,46 @@ seed_config_file() {
 	printf '%s\n' "$DEFAULT_VALUE" > "$DEST"
 }
 
+# Migrate a persisted conf from a *known previous default* to the
+# current template. Only does anything if the existing file is byte-
+# identical to one of the prior known defaults; users who customised
+# their conf are never touched. Useful when a release ships an
+# updated default (new path, new package, etc.) and we want existing
+# unmodified installs to inherit it without dropping user edits.
+#
+# Args:
+#   $1  destination path (the persisted conf in /data/adb/pathmask)
+#   $2  template path     (the current shipped conf in $MODDIR)
+#   $3  newline-separated list of "previous default" SHA1 hashes
+#       expressed as a single comma-separated string. The file
+#       is migrated if and only if its current content sha1 is
+#       in this list.
+migrate_known_default() {
+	DEST="$1"
+	SRC="$2"
+	KNOWN_HASHES="$3"
+
+	[ -f "$DEST" ] || return 0
+	[ -f "$SRC" ] || return 0
+	[ -n "$KNOWN_HASHES" ] || return 0
+
+	# Use sha1sum for the hash comparison (Android toybox ships
+	# sha1sum in /system/bin since at least platform 28). Fall back
+	# silently if it's missing -- users on older devices keep their
+	# conf as-is, which is the conservative behaviour.
+	command -v sha1sum >/dev/null 2>&1 || return 0
+
+	CUR_HASH="$(sha1sum "$DEST" 2>/dev/null | awk '{print $1}')"
+	[ -n "$CUR_HASH" ] || return 0
+
+	case ",$KNOWN_HASHES," in
+		*",$CUR_HASH,"*)
+			cp "$SRC" "$DEST" 2>/dev/null && \
+				log_i "migrated $DEST from a known prior default to the current template"
+			;;
+	esac
+}
+
 migrate_legacy_config() {
 	[ -d "$PERSIST_DIR" ] && return
 	[ -d "$LEGACY_PERSIST_DIR" ] || return
@@ -190,6 +230,24 @@ init_persistent_config() {
 
 	chmod 0700 "$PERSIST_DIR" 2>/dev/null || true
 	migrate_legacy_wait_seconds
+
+	# Upgrade-path migrations: if the user is still running the
+	# verbatim default from a previous release (we recognise it by
+	# its exact byte content via sha1sum), refresh that file from
+	# the current template. Customised configs are never touched.
+	#
+	# Hashes correspond to v2.2.0 - v2.2.7 defaults. Both with-
+	# and without-trailing-newline variants are listed because
+	# different releases in that range produced both shapes.
+	migrate_known_default \
+		"$CONFIG_PATH" \
+		"$MOD_CONFIG_PATH" \
+		"6d0cc64350e72f06456c80db047088531f5dc757,c4a3dabda772d3f3a4587f3a823beb1273eb6bce"
+	migrate_known_default \
+		"$DENY_PACKAGES_CONFIG" \
+		"$MOD_DENY_PACKAGES_CONFIG" \
+		"7ad1d966a10590d44d8a1eb76176009f8e4a184d,8b2b84a4ffcb85e3cfca84079dd5468defd3e173"
+
 	seed_config_file "$CONFIG_PATH" "$MOD_CONFIG_PATH" ""
 	seed_config_file "$HIDE_DIRENTS_CONFIG" "$MOD_HIDE_DIRENTS_CONFIG" "1"
 	seed_config_file "$SCOPE_MODE_CONFIG" "$MOD_SCOPE_MODE_CONFIG" "deny"
