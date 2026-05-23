@@ -1,3 +1,21 @@
+# PathMask 2.3.1
+
+## 解决了什么
+
+- 修复重度自定义 deny_packages（200+ 包）导致的隐藏失效问题。原先内核侧 deny UID 列表上限为 128 个，超出会丢弃。如果用户的 detector 应用刚好排在第 129 个之后，`should_hide_for_current()` 对它就返回 false，所有路径在它眼中都正常存在。dmesg 里能看到 `pathmask: too many deny UIDs, skip <uid>` 警告。
+- 内核侧 `MAX_DENY_UIDS` 从 128 提到 1024，`UID_LIST_LEN` insmod 参数缓冲区从 2KB 提到 8KB。1024 个 UID 可覆盖几乎所有合理场景，BSS 增量约 4KB。
+
+## 怎么判断你是否中招了
+
+```sh
+adb shell su -c 'dmesg | grep "too many deny"' 
+```
+有输出说明撞到上限。升级到 v2.3.1 之后这条警告应该消失。
+
+## 内核模块更新
+
+本次需要重新编译 .ko，所有 7 个 KMI 都会出新版。.ko 大小可能略有增加（约 30 KB BSS）。
+
 # PathMask 2.3.0
 
 ## 解决了什么

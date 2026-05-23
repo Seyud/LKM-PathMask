@@ -26,10 +26,10 @@
 
 #define PM_LOG_PREFIX "pathmask: "
 #define MAX_HIDE_TARGETS 64
-#define MAX_DENY_UIDS 128
+#define MAX_DENY_UIDS 1024
 #define TARGET_PATHS_LEN 4096
 #define TARGET_TEXT_LEN 256
-#define UID_LIST_LEN 2048
+#define UID_LIST_LEN 8192
 #define ANDROID_USER_OFFSET 100000u
 /*
  * Android isolated UID layout (see frameworks/base android/os/Process.java):
