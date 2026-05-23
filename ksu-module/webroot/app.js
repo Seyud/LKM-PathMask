@@ -1023,7 +1023,39 @@ if [ -f ${shellQuote(files.targets)} ]; then
     resolved=$(cat /sys/module/${MODULE_NAME}/parameters/resolved_count 2>/dev/null || echo ?)
     echo "(scope=global, kernel resolved $resolved target(s); skipping user-space stat probe to avoid self-hide)"
   else
-    while IFS= read -r p || [ -n "$p" ]; do [ -z "$p" ] && continue; case "$p" in \\#*) continue;; esac; if [ -e "$p" ]; then echo "OK $p"; else echo "MISS $p"; fi; done < ${shellQuote(files.targets)}
+    # Probe each line: strip optional dir: prefix, translate ??? to
+    # shell *, then either glob-expand (and report HIT/EMPTY) or
+    # plain test -e for literals. Without this, lines like
+    # /dev/???/scene_mode_category are stat()ed verbatim and always
+    # come back as MISS, falsely alarming the user even when the
+    # kernel has the resolved hash dir hidden correctly.
+    while IFS= read -r p || [ -n "$p" ]; do
+      [ -z "$p" ] && continue
+      case "$p" in \\#*) continue;; esac
+      raw="$p"
+      case "$p" in dir:*) p=\${p#dir:};; esac
+      pat=$(printf '%s' "$p" | sed 's/[?][?][?]/*/g')
+      case "$pat" in
+        *'*'*|*'?'*|*'['*)
+          # Glob form. Use a child shell to enable expansion;
+          # nullglob isn't available in toybox sh so we test the
+          # first match directly.
+          first=$(/system/bin/sh -c "for m in $pat; do [ -e \\"\\$m\\" ] && echo \\"\\$m\\" && break; done" 2>/dev/null)
+          if [ -n "$first" ]; then
+            echo "HIT $raw -> $first"
+          else
+            echo "EMPTY $raw (glob currently has no matches)"
+          fi
+          ;;
+        *)
+          if [ -e "$pat" ]; then
+            echo "OK $raw"
+          else
+            echo "MISS $raw"
+          fi
+          ;;
+      esac
+    done < ${shellQuote(files.targets)}
   fi
 fi
 true
