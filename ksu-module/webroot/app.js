@@ -39,8 +39,8 @@ const LOG_PAGE_LINES = 80;
 
 const DEFAULT_TARGET_PATHS = [
 	"/dev/cpuset/scene-daemon",
-	"/dev/scene",
-	"dir:/dev/???/scene_mode_category",
+	"any:scene:/dev/scene",
+	"any:scene:dir:/dev/???/scene_mode_category",
 	"/system_ext/app/SoterService",
 ];
 
@@ -231,32 +231,46 @@ function renderPaths(paths) {
 	for (const path of list) addPathRow(path);
 }
 
-// A target_path.conf line is either a literal path
-// (`/system_ext/app/SoterService`), a glob pattern using `???` for any
-// path segment (`/dev/???/scene_mode_category`), or either of the above
-// prefixed with `dir:` to instruct the kernel to hide the *parent
-// directory* of each match rather than the match itself. For dynamic
-// paths (Scene 9.3.0+ randomises its debugfs mount under
-// `/dev/<8-char-hash>/...`), `dir:` plus the marker file is the only
-// strategy that defeats the standard mkdir(EEXIST)/stat(EACCES)
-// existence side-channels Detectors use, because the parent directory
-// itself disappears.
+// A target_path.conf line is one of:
+//   - literal:                `/system_ext/app/SoterService`
+//   - glob (any segment):     `/dev/???/scene_mode_category`
+//   - `dir:` prefix:          hide parent of each match
+//   - `any:<group>:` prefix:  member of an OR group; the boot wait
+//                             is satisfied if *any* member of the
+//                             group resolves. Useful for "Scene 8.x
+//                             OR Scene 9.3+" style configs where
+//                             one of two paths will exist.
+//
+// Prefix order is fixed: `any:<group>:dir:<path>`. dir: stays
+// adjacent to the path so it's obvious which prefix governs which
+// behaviour (group membership vs parent-hiding).
 function splitTargetLine(raw) {
-	const trimmed = (raw || "").trim();
-	if (trimmed.startsWith("dir:")) {
-		return { useParent: true, path: trimmed.slice(4).trim() };
+	let trimmed = (raw || "").trim();
+	let group = "";
+	const m = trimmed.match(/^any:([^:]*):(.*)$/);
+	if (m) {
+		group = m[1];
+		trimmed = m[2].trim();
 	}
-	return { useParent: false, path: trimmed };
+	let useParent = false;
+	if (trimmed.startsWith("dir:")) {
+		useParent = true;
+		trimmed = trimmed.slice(4).trim();
+	}
+	return { group, useParent, path: trimmed };
 }
 
-function joinTargetLine(path, useParent) {
+function joinTargetLine(path, useParent, group) {
 	const p = (path || "").trim();
 	if (!p) return "";
-	return useParent ? `dir:${p}` : p;
+	let out = useParent ? `dir:${p}` : p;
+	const g = (group || "").trim();
+	if (g) out = `any:${g}:${out}`;
+	return out;
 }
 
 function addPathRow(value = "") {
-	const { useParent, path } = splitTargetLine(value);
+	const { useParent, path, group } = splitTargetLine(value);
 
 	const row = document.createElement("div");
 	row.className = "pathRow";
@@ -266,22 +280,27 @@ function addPathRow(value = "") {
 	input.value = path;
 	input.placeholder = "/system/app/example 或 /dev/???/marker";
 
+	const groupInput = document.createElement("input");
+	groupInput.type = "text";
+	groupInput.className = "pathRowGroup";
+	groupInput.value = group;
+	groupInput.placeholder = "组";
+	groupInput.title = "可选 OR 组名。同名组内任一行命中即视为该组满足，所有未分组的行仍需各自存在";
+
 	const dirToggle = document.createElement("label");
 	dirToggle.className = "pathRowDirToggle";
 	dirToggle.title = "勾选后隐藏匹配项的父目录（dir:）。对随机父目录场景必须勾选";
 	const dirCheckbox = document.createElement("input");
 	dirCheckbox.type = "checkbox";
 	dirCheckbox.checked = useParent;
-	const dirLabel = document.createElement("span");
-	dirLabel.textContent = "父级";
-	dirToggle.append(dirCheckbox, dirLabel);
+	dirToggle.append(dirCheckbox);
 
 	const remove = document.createElement("button");
 	remove.type = "button";
 	remove.textContent = "删";
 	remove.addEventListener("click", () => row.remove());
 
-	row.append(input, dirToggle, remove);
+	row.append(input, groupInput, dirToggle, remove);
 	pathList.append(row);
 	input.focus();
 }
@@ -289,9 +308,15 @@ function addPathRow(value = "") {
 function collectPaths() {
 	return [...pathList.querySelectorAll(".pathRow")]
 		.map((row) => {
-			const input = row.querySelector('input[type="text"]');
+			const inputs = row.querySelectorAll('input[type="text"]');
+			const pathInput = inputs[0];
+			const groupInput = inputs[1];
 			const dirCheckbox = row.querySelector('input[type="checkbox"]');
-			return joinTargetLine(input?.value, dirCheckbox?.checked);
+			return joinTargetLine(
+				pathInput?.value,
+				dirCheckbox?.checked,
+				groupInput?.value
+			);
 		})
 		.filter(Boolean);
 }
@@ -828,12 +853,15 @@ async function validateConfig(options = {}) {
 	}
 
 	for (const rawLine of paths) {
-		const { path } = splitTargetLine(rawLine);
+		const { path, group } = splitTargetLine(rawLine);
 		if (!path.startsWith("/")) {
 			errors.push(`隐藏路径必须是绝对路径：${rawLine}`);
 		}
 		if (rawLine.includes(",")) {
 			errors.push(`隐藏路径不能包含英文逗号：${rawLine}`);
+		}
+		if (group && /[:\s]/.test(group)) {
+			errors.push(`组名不能包含冒号或空白：${rawLine}`);
 		}
 		if (seenPaths.has(rawLine)) {
 			warnings.push(`重复路径会被重复传入内核：${rawLine}`);
@@ -1033,6 +1061,14 @@ if [ -f ${shellQuote(files.targets)} ]; then
       [ -z "$p" ] && continue
       case "$p" in \\#*) continue;; esac
       raw="$p"
+      # Strip optional any:<group>: prefix (purely for the wait
+      # logic; the path under it is checked the same way).
+      case "$p" in
+        any:*:*)
+          rest=\${p#any:}
+          p=\${rest#*:}
+          ;;
+      esac
       case "$p" in dir:*) p=\${p#dir:};; esac
       pat=$(printf '%s' "$p" | sed 's/[?][?][?]/*/g')
       case "$pat" in
@@ -1101,7 +1137,41 @@ function switchLog(log) {
 	renderLogPage();
 }
 
+function openModal(id) {
+	const modal = document.getElementById(id);
+	if (!modal) return;
+	modal.hidden = false;
+	// Defer the focus call so the dialog has actually rendered
+	// before we move focus into it; avoids a flash where the
+	// previously focused element keeps its outline.
+	setTimeout(() => {
+		const closeBtn = modal.querySelector("[data-modal-close]");
+		if (closeBtn) closeBtn.focus();
+	}, 0);
+}
+
+function closeModal(id) {
+	const modal = document.getElementById(id);
+	if (!modal) return;
+	modal.hidden = true;
+}
+
+document.addEventListener("click", (event) => {
+	const trigger = event.target.closest("[data-modal-close]");
+	if (!trigger) return;
+	const id = trigger.getAttribute("data-modal-close");
+	if (id) closeModal(id);
+});
+
+document.addEventListener("keydown", (event) => {
+	if (event.key !== "Escape") return;
+	for (const modal of $$(".modal")) {
+		if (!modal.hidden) closeModal(modal.id);
+	}
+});
+
 $("#addPathBtn").addEventListener("click", () => addPathRow());
+$("#pathHelpBtn").addEventListener("click", () => openModal("pathHelpModal"));
 $("#loadAppsBtn").addEventListener("click", () => runAction("正在加载应用...", loadApps).catch(() => {}));
 $("#refreshBtn").addEventListener("click", () => runAction("正在刷新...", refreshConfig).catch(() => {}));
 $("#searchInput").addEventListener("input", renderApps);

@@ -242,6 +242,35 @@ $RAW_LINE"
 	fi
 }
 
+# Strip an optional `any:<group>:` prefix from a raw config line.
+# Sets the global GROUP_ID to the group name (or empty for ungrouped
+# lines) and prints the remainder. Used by is_glob_line(),
+# expand_target_line(), and the wait/probe helpers so the rest of
+# the code never has to think about the prefix.
+#
+# Group semantics: every ungrouped line must resolve on its own; a
+# group is satisfied if *any* line bearing the same `any:<group>:`
+# prefix resolves. The boot wait completes the moment all ungrouped
+# lines exist AND every group has at least one member resolving.
+# This lets the bundled defaults ship with two Scene targets
+# (8.x literal /dev/scene + 9.3+ glob dir:/dev/???/scene_mode_category)
+# joined into one OR group, so a device running either Scene version
+# (or neither) doesn't burn the wait timeout on the missing one.
+strip_group_prefix() {
+	IN="$1"
+	GROUP_ID=""
+	case "$IN" in
+		any:*:*)
+			REST="${IN#any:}"
+			GROUP_ID="${REST%%:*}"
+			REST="${REST#*:}"
+			printf '%s' "$REST"
+			return
+			;;
+	esac
+	printf '%s' "$IN"
+}
+
 # Returns 0 if the raw config line is a glob (contains the `???` marker
 # or any of the standard shell glob metachars `?` `*` `[`), 1 otherwise.
 # We accept `???` as a user-friendly synonym for `*` (matches any single
@@ -250,7 +279,9 @@ $RAW_LINE"
 # expand_target_line() for the substitution.
 is_glob_line() {
 	LINE="$1"
-	# Strip "dir:" prefix before glob detection.
+	# Strip optional `any:<group>:` first, then `dir:`, before
+	# detecting glob metachars.
+	LINE="$(strip_group_prefix "$LINE")"
 	case "$LINE" in
 		dir:*) LINE="${LINE#dir:}" ;;
 	esac
@@ -271,6 +302,12 @@ is_glob_line() {
 expand_target_line() {
 	RAW="$1"
 	USE_PARENT=0
+
+	# Strip optional `any:<group>:` first; the group prefix exists
+	# only for the boot-time wait grouping and is invisible to the
+	# kernel (the kernel hides paths regardless of which OR group
+	# they belonged to in the conf).
+	RAW="$(strip_group_prefix "$RAW")"
 
 	case "$RAW" in
 		dir:*)
@@ -530,29 +567,141 @@ any_target_exists() {
 	return 1
 }
 
-# all_literal_targets_exist: every literal (non-glob) line in
-# TARGET_RAW_LINES must resolve to an existing path. Glob lines are
-# ignored here because matching nothing is a valid steady state (e.g.
-# Scene not installed). Without this distinction the boot wait would
-# burn its full timeout every boot on devices without Scene 9.3.
+# Probe a single raw config line: returns 0 if it currently resolves
+# to at least one existing path, 1 otherwise. Handles all three
+# layers in order: any:<group>: prefix stripping, dir: prefix
+# stripping, and ??? -> * + shell glob expansion. For glob lines
+# we count "at least one match exists" as resolved; for literal
+# lines a plain `[ -e ]` is enough.
+raw_line_resolves() {
+	IN="$1"
+	IN="$(strip_group_prefix "$IN")"
+	case "$IN" in
+		dir:*) IN="${IN#dir:}" ;;
+	esac
+
+	# Translate ??? -> * via parameter substitution (no sed
+	# dependency at boot, same as expand_target_line).
+	PROBE="$IN"
+	while :; do
+		case "$PROBE" in
+			*'???'*) PROBE="${PROBE%%'???'*}*${PROBE#*'???'}" ;;
+			*) break ;;
+		esac
+	done
+
+	case "$PROBE" in
+		*'*'*|*'?'*|*'['*)
+			# Glob form: probe resolves iff the first iteration
+			# of the for-loop sees an existing path. Without
+			# nullglob we have to short-circuit manually because
+			# an empty match returns the literal pattern.
+			# shellcheck disable=SC2086
+			set -- $PROBE
+			for M in "$@"; do
+				case "$M" in
+					*'*'*|*'?'*|*'['*) continue ;;
+				esac
+				[ -e "$M" ] && return 0
+			done
+			return 1
+			;;
+		*)
+			[ -e "$PROBE" ] && return 0
+			return 1
+			;;
+	esac
+}
+
+# all_literal_targets_exist: every ungrouped raw line must resolve,
+# AND every distinct any:<group>: must have at least one member that
+# resolves. Glob lines that match nothing are skipped only if they
+# are *grouped* (a glob line outside a group still must match -- the
+# user explicitly asked for it, no fallback).
+#
+# Loop runs entirely against TARGET_RAW_LINES so we re-check every
+# wait iteration; this catches Scene mounting its randomised
+# /dev/<hash>/debug late in boot without us having to keep state.
 all_literal_targets_exist() {
+	# A group is "satisfied" when at least one member resolves.
+	# We track this in a comma-separated allowlist: SATISFIED_GROUPS.
+	# Two passes: first collect the set of unsatisfied groups (any
+	# group with zero resolving members), then verify every
+	# ungrouped line. This avoids backtracking and keeps the cost
+	# linear in the conf size.
+	SATISFIED_GROUPS=","
+	SEEN_GROUPS=","
 	OLD_IFS="$IFS"
 	IFS="
 "
+
+	# Pass 1: scan grouped lines, mark groups satisfied as soon as
+	# any member resolves.
 	for RAW in $TARGET_RAW_LINES; do
 		IFS="$OLD_IFS"
-		# Strip dir: prefix for the existence check; the literal path
-		# itself must exist (the kernel will then hide its parent).
-		PROBE="$RAW"
-		case "$PROBE" in
-			dir:*) PROBE="${PROBE#dir:}" ;;
+		case "$RAW" in
+			any:*:*)
+				REST="${RAW#any:}"
+				GID="${REST%%:*}"
+				case ",$SEEN_GROUPS" in
+					*",$GID,"*) ;;
+					*) SEEN_GROUPS="$SEEN_GROUPS$GID," ;;
+				esac
+				case ",$SATISFIED_GROUPS" in
+					*",$GID,"*)
+						# This group already has a member that
+						# resolved; skip the rest of its members.
+						;;
+					*)
+						if raw_line_resolves "$RAW"; then
+							SATISFIED_GROUPS="$SATISFIED_GROUPS$GID,"
+						fi
+						;;
+				esac
+				;;
 		esac
+		IFS="
+"
+	done
+
+	# Any group seen but never satisfied means the wait must
+	# continue.
+	IFS=","
+	for GID in ${SEEN_GROUPS#,}; do
+		IFS="$OLD_IFS"
+		[ -z "$GID" ] && continue
+		case ",$SATISFIED_GROUPS" in
+			*",$GID,"*) ;;
+			*)
+				IFS="$OLD_IFS"
+				return 1
+				;;
+		esac
+		IFS=","
+	done
+	IFS="
+"
+
+	# Pass 2: every ungrouped raw line must resolve.
+	for RAW in $TARGET_RAW_LINES; do
+		IFS="$OLD_IFS"
+		case "$RAW" in
+			any:*:*)
+				IFS="
+"
+				continue
+				;;
+		esac
+		# Glob lines outside a group: still must match (user-asked,
+		# no fallback). This preserves the v2.2.8 behaviour for
+		# top-level glob lines like a manually added
+		# /dev/proc-???/something line.
 		if is_glob_line "$RAW"; then
 			IFS="
 "
 			continue
 		fi
-		if [ ! -e "$PROBE" ]; then
+		if ! raw_line_resolves "$RAW"; then
 			IFS="$OLD_IFS"
 			return 1
 		fi
@@ -564,34 +713,70 @@ all_literal_targets_exist() {
 }
 
 log_missing_targets() {
+	# Walk every raw line. For grouped lines we report once per
+	# group ("group <gid> currently has no satisfying member") only
+	# if the group has zero resolving members. Ungrouped glob lines
+	# log "glob line currently has no matches"; ungrouped literal
+	# lines log "literal target still missing".
+	GROUP_DONE=","
 	OLD_IFS="$IFS"
 	IFS="
 "
 	for RAW in $TARGET_RAW_LINES; do
 		IFS="$OLD_IFS"
-		PROBE="$RAW"
-		case "$PROBE" in
-			dir:*) PROBE="${PROBE#dir:}" ;;
-		esac
-		if is_glob_line "$RAW"; then
-			# Run the line's own expansion to count matches. A glob with
-			# 0 matches is not an error -- the user's Scene may not be
-			# installed -- but we log it once at info level so users can
-			# tell from logs whether the line is doing anything.
-			SAVE_TARGET_PATHS="$TARGET_PATHS"
-			TARGET_PATHS=""
-			expand_target_line "$RAW"
-			if [ -z "$TARGET_PATHS" ]; then
-				log_i "glob line currently has no matches: $RAW"
-			fi
-			TARGET_PATHS="$SAVE_TARGET_PATHS"
-			IFS="
+		case "$RAW" in
+			any:*:*)
+				REST="${RAW#any:}"
+				GID="${REST%%:*}"
+				case ",$GROUP_DONE" in
+					*",$GID,"*)
+						# Already reported for this group, skip.
+						IFS="
 "
-			continue
-		fi
-		if [ ! -e "$PROBE" ]; then
-			log_i "literal target still missing, kernel will skip: $PROBE"
-		fi
+						continue
+						;;
+				esac
+				# Re-scan all members of this group; if at least one
+				# resolves, the group is satisfied (no log). Else log
+				# once with a brief description of the group's lines.
+				ANY_OK=0
+				IFS="
+"
+				for INNER in $TARGET_RAW_LINES; do
+					IFS="$OLD_IFS"
+					case "$INNER" in
+						any:"$GID":*)
+							if raw_line_resolves "$INNER"; then
+								ANY_OK=1
+								break
+							fi
+							;;
+					esac
+					IFS="
+"
+				done
+				IFS="$OLD_IFS"
+				if [ "$ANY_OK" = "0" ]; then
+					log_i "group '$GID' currently has no resolving member, kernel will not see this group's targets until one appears"
+				fi
+				GROUP_DONE="$GROUP_DONE$GID,"
+				;;
+			*)
+				if is_glob_line "$RAW"; then
+					if ! raw_line_resolves "$RAW"; then
+						log_i "glob line currently has no matches: $RAW"
+					fi
+				else
+					PROBE="$RAW"
+					case "$PROBE" in
+						dir:*) PROBE="${PROBE#dir:}" ;;
+					esac
+					if [ ! -e "$PROBE" ]; then
+						log_i "literal target still missing, kernel will skip: $PROBE"
+					fi
+				fi
+				;;
+		esac
 		IFS="
 "
 	done
