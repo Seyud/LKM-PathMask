@@ -80,9 +80,7 @@
 					<span>
 						增强 syscall 兜底
 						<small class="hint">
-							挂 7 个 <code>__arm64_sys_*</code> kretprobe 兜底 ThinLTO 内联场景。
-							<strong>默认关闭</strong>：开启后会被基于 stat/access 时延的环境检测识别（如 Holmes Abnormal Environment 04）。
-							仅在某个 detector 通过 ThinLTO 内联绕过 inode_permission/vfs_getattr 时再开。
+							加强少数极端场景下的路径隐藏效果，但会被多数环境检测识别为异常（如 Holmes、Hunter 等）。<strong>不推荐开启。</strong>
 						</small>
 					</span>
 					<input id="enableSyscallHooksInput" type="checkbox">

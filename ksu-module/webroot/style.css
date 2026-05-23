@@ -9,6 +9,12 @@
 	box-sizing: border-box;
 }
 
+html,
+body {
+	overflow-x: hidden;
+	max-width: 100%;
+}
+
 body {
 	margin: 0;
 	min-height: 100vh;
@@ -27,6 +33,11 @@ body {
 	padding: 16px 14px 12px;
 	background: color-mix(in srgb, Canvas 90%, CanvasText 10%);
 	border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+}
+
+.topbar > div:first-child {
+	min-width: 0;
+	flex: 1;
 }
 
 h1,
@@ -49,6 +60,7 @@ h2 {
 	margin-top: 4px;
 	font-size: 13px;
 	color: color-mix(in srgb, CanvasText 66%, transparent);
+	overflow-wrap: anywhere;
 }
 
 .topActions {
@@ -120,6 +132,7 @@ main {
 }
 
 .metric {
+	min-width: 0;
 	min-height: 72px;
 	padding: 12px;
 	border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
@@ -142,6 +155,7 @@ main {
 }
 
 .panel {
+	min-width: 0;
 	padding: 14px;
 	border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
 	border-radius: 8px;
@@ -154,6 +168,12 @@ main {
 	justify-content: space-between;
 	gap: 12px;
 	margin-bottom: 12px;
+	min-width: 0;
+}
+
+.sectionTitle > h2 {
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 
 .inlineControls,
@@ -177,7 +197,7 @@ main {
 
 .pathRow {
 	display: grid;
-	grid-template-columns: 1fr 44px;
+	grid-template-columns: minmax(0, 1fr) 44px;
 	gap: 8px;
 }
 
@@ -305,7 +325,7 @@ button:active {
 
 .appRow {
 	display: grid;
-	grid-template-columns: 24px 1fr auto;
+	grid-template-columns: 24px minmax(0, 1fr) auto;
 	align-items: center;
 	gap: 10px;
 	min-height: 44px;
@@ -336,6 +356,7 @@ button:active {
 }
 
 .healthItem {
+	min-width: 0;
 	padding: 10px 11px;
 	border-radius: 7px;
 	border: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
@@ -358,12 +379,15 @@ button:active {
 	display: block;
 	margin-bottom: 4px;
 	font-size: 14px;
+	overflow-wrap: anywhere;
 }
 
 .healthItem span {
 	display: block;
 	font-size: 13px;
 	color: color-mix(in srgb, CanvasText 68%, transparent);
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
 }
 
 .monoBox {
@@ -371,6 +395,8 @@ button:active {
 	font-size: 12px;
 	line-height: 1.45;
 	white-space: pre;
+	max-width: 100%;
+	overflow: auto;
 }
 
 .logTabs {
@@ -419,6 +445,8 @@ button:active {
 	color: Canvas;
 	box-shadow: 0 8px 28px rgba(0, 0, 0, .24);
 	z-index: 30;
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
 
 @media (min-width: 760px) {
