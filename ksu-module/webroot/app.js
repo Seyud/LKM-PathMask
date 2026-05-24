@@ -702,59 +702,53 @@ function detectKmiFromUname(unameR) {
 }
 
 /*
- * Run all probe shell in one round-trip and parse outputs into a
- * structured facts object. Each section is delimited by a magic
- * marker so we can split reliably even when probes fail mid-stream.
+ * Run all probes as separate small shell calls. Earlier versions
+ * tried to do this in one combined shell with a magic separator
+ * (`###PMSEP###`), but on at least one OnePlus / OxygenOS WebUI
+ * exec bridge the whole probe came back with empty stdout while
+ * other neighbouring `safeExec` calls succeeded -- the symptom was
+ * a verdict that swore the module wasn't loaded while the raw
+ * /proc/modules dump in the same report clearly showed it was.
+ * Splitting the probes makes each round-trip independent: a
+ * malformed sub-probe drops one fact, not all of them, and we get
+ * per-probe stderr / errno for the few signals (dmesg, getenforce
+ * on builds without it) where the failure mode itself is the fact
+ * we want to surface to the user.
  *
- * Heads up: shell here is run as the WebUI shell user, which on
- * KernelSU is root, but several probes are still gated by SELinux
- * domain (e.g. dmesg under restrict, /sys/kernel/tainted on some
- * builds). We capture the resulting errno + stderr via probeExec()
- * so the verdict can distinguish "feature gone" from "no signal".
+ * Each probeExec call is sub-ms on a local KSU bridge, so the
+ * extra round trips are not noticeable.
  */
 async function gatherDiagnosticFacts(snapshot) {
-	const sep = "###PMSEP###";
-	const result = await probeExec(`
-echo ${sep}uname
-uname -r 2>&1
-echo ${sep}taint
-cat /proc/sys/kernel/tainted 2>&1
-echo ${sep}dmesgrestrict
-cat /proc/sys/kernel/dmesg_restrict 2>&1
-echo ${sep}pagesize
-getconf PAGE_SIZE 2>&1
-echo ${sep}selinux
-getenforce 2>&1
-echo ${sep}ksum
-[ -f ${shellQuote(files.ko)} ] && sha1sum ${shellQuote(files.ko)} 2>&1 | awk '{print $1}' || echo missing
-echo ${sep}kosize
-[ -f ${shellQuote(files.ko)} ] && stat -c '%s' ${shellQuote(files.ko)} 2>&1 || echo missing
-echo ${sep}allmodules
-cat /proc/modules 2>&1
-echo ${sep}dmesgall
-dmesg 2>&1 | grep -Ei 'pathmask|nohello|module_layout|disagrees|unknown symbol|invalid module|exec format' | tail -n 80
-true
-`);
-
-	const stdout = result.stdout || "";
-	const sections = {};
-	const re = new RegExp(`^${sep}(\\w+)$`);
-	let key = null;
-	const lines = stdout.split(/\r?\n/);
-	for (const line of lines) {
-		const m = line.match(re);
-		if (m) {
-			key = m[1];
-			sections[key] = "";
-			continue;
-		}
-		if (key !== null) {
-			sections[key] += (sections[key] ? "\n" : "") + line;
-		}
-	}
-
+	// One-shot small probes. Each `?? ""` keeps "ERROR: …" out of
+	// the typed facts (probeExec already returns a structured
+	// object so we don't need that suffix); we use { ok, stdout,
+	// stderr } directly.
 	const trim = (s) => (s || "").trim();
-	const allModules = trim(sections.allmodules);
+	const ok = (r) => trim(r && r.ok ? r.stdout : "");
+
+	const [
+		unameRes,
+		taintRes,
+		dmesgRestrictRes,
+		pagesizeRes,
+		selinuxRes,
+		kosumRes,
+		kosizeRes,
+		modulesRes,
+		dmesgRes,
+	] = await Promise.all([
+		probeExec(`uname -r 2>&1`),
+		probeExec(`cat /proc/sys/kernel/tainted 2>&1`),
+		probeExec(`cat /proc/sys/kernel/dmesg_restrict 2>&1`),
+		probeExec(`getconf PAGE_SIZE 2>&1`),
+		probeExec(`getenforce 2>&1`),
+		probeExec(`[ -f ${shellQuote(files.ko)} ] && sha1sum ${shellQuote(files.ko)} 2>&1 | awk '{print $1}' || echo missing`),
+		probeExec(`[ -f ${shellQuote(files.ko)} ] && stat -c '%s' ${shellQuote(files.ko)} 2>&1 || echo missing`),
+		probeExec(`cat /proc/modules 2>&1`),
+		probeExec(`dmesg 2>&1 | grep -Ei 'pathmask|nohello|module_layout|disagrees|unknown symbol|invalid module|exec format' | tail -n 80`),
+	]);
+
+	const allModules = ok(modulesRes);
 	const ourModule = allModules.split(/\r?\n/).find((l) => l.startsWith("pathmask "));
 	const moduleLoaded = !!ourModule;
 	const otherLkms = allModules
@@ -762,38 +756,42 @@ true
 		.map((l) => l.split(" ")[0])
 		.filter((n) => n && n !== "pathmask" && n !== "nohello");
 
-	const dmesgRaw = trim(sections.dmesgall);
-	const dmesgRestrict = trim(sections.dmesgrestrict);
+	const dmesgRaw = ok(dmesgRes);
+	const dmesgRestrict = ok(dmesgRestrictRes);
 	// dmesg_restrict=1 + empty dmesgRaw == almost certainly EPERM,
-	// not "kernel never logged anything about us". Distinguish so the
-	// report stops lying about it.
+	// not "kernel never logged anything about us". Distinguish so
+	// the report stops lying about it. Order: explicit error
+	// (EPERM in stderr) > dmesg_restrict gate > really empty.
 	let dmesgState;
-	if (dmesgRaw && !/^cat:|Operation not permitted/i.test(dmesgRaw)) {
+	const dmesgErr = (dmesgRes && (dmesgRes.stderr || "")) || "";
+	if (dmesgRaw && !/Operation not permitted|Permission denied/i.test(dmesgRaw)) {
 		dmesgState = { available: true, reason: "" };
+	} else if (/Operation not permitted|Permission denied/i.test(dmesgErr) ||
+	           /Operation not permitted|Permission denied/i.test(dmesgRaw)) {
+		dmesgState = {
+			available: false,
+			reason: "权限被拒（SELinux / capabilities / dmesg_restrict）",
+		};
 	} else if (dmesgRestrict === "1") {
 		dmesgState = {
 			available: false,
 			reason: "dmesg_restrict=1（系统锁定，root WebUI shell 也无权读，部分 OnePlus / OEM ROM 默认如此）",
 		};
-	} else if (/Operation not permitted|Permission denied/i.test(dmesgRaw)) {
-		dmesgState = { available: false, reason: "权限被拒（SELinux 或 capabilities）" };
+	} else if (!dmesgRes || !dmesgRes.ok) {
+		dmesgState = {
+			available: false,
+			reason: `dmesg 命令失败（${(dmesgRes && (dmesgRes.stderr || dmesgRes.error)) || "未知"}）`,
+		};
 	} else {
-		dmesgState = { available: false, reason: "dmesg 命令无输出" };
+		dmesgState = { available: false, reason: "dmesg 无 pathmask 相关行" };
 	}
 
-	const koSha = trim(sections.ksum);
-	const koSize = trim(sections.kosize);
-	const unameR = trim(sections.uname);
+	const koSha = ok(kosumRes);
+	const koSize = ok(kosizeRes);
+	const unameR = ok(unameRes);
 	const oem = detectOemKernel(unameR);
 	const kmi = detectKmiFromUname(unameR);
 
-	// Match the zip's KMI label (we don't ship it as a file, but
-	// the .ko filename in /data/adb/modules/pathmask/ is just
-	// pathmask.ko -- the zip suffix is stripped at install time. So
-	// we can only detect a mismatch by comparing the kernel's KMI
-	// to the user-pickable zip metadata, which we don't have here.
-	// Instead we surface the kernel's KMI for the user/dev to
-	// eyeball; CRC mismatch will show up as a dmesg disagrees line.)
 	let bootStateName = null;
 	let bootStateDetail = null;
 	if (snapshot.bootState && snapshot.bootState.state) {
@@ -822,14 +820,12 @@ true
 		unameR,
 		kmi,
 		oem,
-		pageSize: trim(sections.pagesize),
-		selinux: trim(sections.selinux),
-		taint: trim(sections.taint),
+		pageSize: ok(pagesizeRes),
+		selinux: ok(selinuxRes),
+		taint: ok(taintRes),
 		otherLkms,
 		dmesgRaw,
 		dmesgState,
-		_probeOk: result.ok,
-		_probeError: result.error,
 	};
 }
 
