@@ -4,19 +4,20 @@
 
 - 重新设计诊断报告。之前的版本是四段 raw stdout 拼起来，开发者要从一堆数据里翻才能找到信号；用户那边看完更不知道下一步做什么。重设计后报告分五层：
   - **结论**：一行话直说"模块为啥没加载"+ 1-3 条具体下一步建议。WebUI 诊断页顶端也直接显示这一段，用户不必复制报告就能看到。
-  - **关键事实**：模块加载状态、模块文件 sha1、KSU 启用、开机阶段、失败计数、其他 LKM 列表。每行带 ✓ ⚠ ✗ · 状态符号，扫一眼就能定位异常。
-  - **内核环境**：内核版本、KMI、OEM 后缀（自动识别 abogki / oneplus / oxygen / coloros / miui 等）、page size、SELinux、dmesg 是否可读。
-  - **配置 / 路径存在性 / 脚本日志 / dmesg pathmask 相关**：保留旧版核心信息。
+  - **关键事实**：模块加载状态、模块文件 sha1、KSU 启用、开机阶段（含「多久前」）、失败计数、**路径解析数 vs 配置数**、**hook 命中状态**、**stale 配置告警**、其他 LKM 列表。每行带 ✓ ⚠ ✗ · 状态符号，扫一眼就能定位异常。
+  - **内核环境**：内核版本、KMI、OEM 后缀（自动识别 abogki / oneplus / oxygen / coloros / miui 等）、page size、SELinux、解码后的内核污染位（不再是裸 4608，而是 `4608 = O (out-of-tree, e.g. PathMask itself) + K (livepatch)`）、dmesg 是否可读、CRC 错误检测。
+  - **配置 / 路径存在性 / 脚本日志 / dmesg pathmask 相关**：dmesg 段从 80 行 raw 改成结构化分组（load summary / target inodes / hooked / skipped / hook fired / not found / errors），最后保留 raw 兜底。
   - **原始数据**：兜底 raw dump。
 - 修复以前的"`(未生成)`"误报。OnePlus / OxygenOS 16 默认 `dmesg_restrict=1`，WebUI 跑 dmesg 会拿到 EPERM；旧版本统一显示"未生成"，让用户以为是 PathMask 本身的 bug。新版本会写明"dmesg 不可读：dmesg_restrict=1（系统锁定）"，并明确指出"不是 PathMask 的问题"。
 - 修复 `boot_state` 被诊断报告漏掉的问题。这个文件不在 `*.conf` glob 里，是 service.sh 走到哪一步的唯一信号；之前的报告完全不打印它，所以"模块没加载"类问题永远要回头让用户手动 cat。
-- 新增「行动建议」自动生成。基于事实匹配规则，不同失败模式给不同的下一步命令。常见的 7 种状况各对应一条具体建议（KSU 禁用、ko 文件丢失、连续失败保护、wait_for_targets 超时、deny 模式无 UID、boot_state 文件不存在 = service.sh 没跑、loaded 但 /proc/modules 没有等等）。
-- 新增「OEM 内核检测」。`uname -r` 包含 `abogki467167594-4k` 之类的标记时，会在「内核环境」段标注一加 / OPPO 系 GKI 改动，提示 CRC 偶发不兼容时换 SukiSU / KernelPatch 或自编内核。
-- 新增「其他 LKM 加载列表」。这一项是关键 — 能瞬间区分"PathMask 单独失败" vs "整个内核根本拒绝任何 LKM"，之前每次都得开发者多问一遍 `cat /proc/modules`。
-
-## 没改的
-
-- 内核模块、service.sh 的核心加载逻辑、所有 conf 字段格式、所有 sysfs 参数：完全不动。诊断只是观测层，不影响运行行为。
+- 修复合并 shell + 自定义分隔符在某些 OnePlus / OxygenOS WebUI bridge 上返回空 stdout 的问题。导致 verdict 误判"模块没加载"但旁边的 raw dump 明明有 `pathmask 61440 0 - Live`。改为 9 个独立 `probeExec` 调用，单个失败不污染其它事实。
+- 新增「行动建议」自动生成。基于事实匹配规则，不同失败模式给不同的下一步命令。常见的 11 种状况各对应一条具体建议（KSU 禁用、ko 文件丢失、连续失败保护、wait_for_targets 超时、deny 模式无 UID、boot_state 文件不存在 = service.sh 没跑、loaded 但 /proc/modules 没有、stale 配置未热重载、部分路径解析失败、hook 已挂但从未触发等等）。
+- 新增「OEM 内核检测」。`uname -r` 包含 `abogki467167594-4k` 之类的标记时，会在「内核环境」段标注一加 / OPPO 系 GKI 改动。**只在模块真的加载失败 + dmesg 见 CRC 错误时才升 ⚠**；模块工作正常的 OnePlus 用户报告里这条只是 info，不再误报。
+- 新增「stale 配置检测」。比对 `*.conf` 里用户当前的值和 sysfs 里内核实际运行的值（`scope_mode` / `enable_syscall_hooks` / `syscall_hooks` / `deny_uids`）。不一致时 verdict 会直接说"conf 已修改但内核仍在用旧值（点保存并热重载）"。这是用户最常踩的"我改完为什么没生效"类问题的根因。
+- 新增「路径解析对照」。比较 conf 里的路径数和内核实际解析数（来自 `/sys/module/pathmask/parameters/resolved_count`），不一致时 verdict 给"只解析到 N/M"+ 建议看 dmesg 找具体哪一条。
+- 新增「hook 实战触发检测」。模块加载且 dmesg 可读时，从 dmesg 里抓 `hook fired (first time)` 行，verdict 头部显示"已实战触发：inode_permission, vfs_getattr"等；如果开机已超 5 分钟仍没有任何 hook fire，发"hook 已挂但从未被触发"警告（暗示 deny UID 未访问目标，或者 deny 列表配错了）。
+- 新增「污染位解码」。`tainted=4608` 之前是裸数字，现在解码成 `4608 = O (out-of-tree) + K (livepatch)`。常见 OnePlus 设备就是这两位，用户不再误以为是异常。
+- 新增「内核拒绝信号」单独一行。dmesg 里有 `disagrees about version of symbol` / `Unknown symbol` / `invalid module format` / `exec format error` / `module_layout` 等关键词时，关键事实里直接挑出来标 ✗ + 行数，不用翻 dmesg 段。
 
 # PathMask 2.3.2
 

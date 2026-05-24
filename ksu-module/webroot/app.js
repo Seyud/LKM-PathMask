@@ -702,6 +702,143 @@ function detectKmiFromUname(unameR) {
 }
 
 /*
+ * Decode `/proc/sys/kernel/tainted` bitmask into the human-readable
+ * flag names (matches kernel/panic.c::TAINT_FLAGS). 4608 = 0x1200 =
+ * TAINT_OOT_MODULE (12) + TAINT_LIVEPATCH (9), seen on most OnePlus
+ * builds because their stock kernel ships unsigned third-party
+ * drivers; PathMask itself also flips OOT_MODULE on insmod, so a
+ * non-zero value is not by itself a problem -- we just want to
+ * decode it so the user/dev can recognise what's there. Bit names
+ * track Linux 6.x; older kernels ignore unknown bits.
+ */
+const TAINT_FLAGS = [
+	{ bit: 0,  name: "P (proprietary)" },
+	{ bit: 1,  name: "F (forced)" },
+	{ bit: 2,  name: "S (SMP unsafe)" },
+	{ bit: 3,  name: "R (forced rmmod)" },
+	{ bit: 4,  name: "M (machine check)" },
+	{ bit: 5,  name: "B (bad page)" },
+	{ bit: 6,  name: "U (userspace)" },
+	{ bit: 7,  name: "D (oops)" },
+	{ bit: 8,  name: "A (acpi-override)" },
+	{ bit: 9,  name: "W (warning)" },
+	{ bit: 10, name: "C (staging)" },
+	{ bit: 11, name: "I (firmware-workaround)" },
+	{ bit: 12, name: "O (out-of-tree, e.g. PathMask itself)" },
+	{ bit: 13, name: "E (unsigned)" },
+	{ bit: 14, name: "L (soft-lockup)" },
+	{ bit: 15, name: "K (livepatch)" },
+	{ bit: 16, name: "X (auxiliary)" },
+	{ bit: 17, name: "T (struct random)" },
+	{ bit: 18, name: "N (test)" },
+];
+
+function decodeTaint(value) {
+	const v = Number.parseInt(String(value || "").trim(), 10);
+	if (!Number.isFinite(v) || v <= 0) return { value: 0, names: [], pretty: "0 (干净)" };
+	const names = TAINT_FLAGS.filter(({ bit }) => v & (1 << bit)).map(({ name }) => name);
+	return {
+		value: v,
+		names,
+		pretty: names.length ? `${v} = ${names.join(" + ")}` : `${v} (未识别)`,
+	};
+}
+
+/*
+ * Pull the most actionable single lines out of the `dmesg | grep
+ * pathmask|...` blob so the verdict layer can branch on typed
+ * signals instead of regex-spelunking. Most loaders print:
+ *
+ *   pathmask: target[N] /path ino=... dev=...
+ *   pathmask: hooked __arm64_sys_xxx
+ *   pathmask: skip __arm64_sys_xxx (disabled)
+ *   pathmask: <hook> hook fired (first time)
+ *   pathmask: loaded -- N target(s) hidden, scope=...
+ *
+ * Negative signals (CRC mismatch, unresolved symbols, EXECfail) are
+ * what we most want to elevate -- if any of these is present the
+ * report should turn the OEM-suffix banner from info to actionable.
+ */
+function summarizeDmesg(text) {
+	const lines = (text || "").split(/\r?\n/);
+	const sum = {
+		hookedSymbols: [],     // ["__arm64_sys_newfstatat", ...]
+		skippedSymbols: [],    // ["__arm64_sys_faccessat"]
+		hookFiredFirstTime: [],// ["inode_permission", "vfs_getattr"]
+		loadedLine: "",        // "pathmask: loaded -- 3 target(s) hidden..."
+		targetLines: [],       // ["target[0] /dev/cpuset/scene-daemon ino=346 dev=0:80"]
+		notFoundLines: [],     // ["pathmask: /dev/foo not found (err=-2), skip"]
+		errorLines: [],        // disagrees, unknown symbol, etc
+	};
+	for (const raw of lines) {
+		const line = raw.trim();
+		if (!line) continue;
+		// strip the kernel timestamp prefix `[   12.345678]` for prettier display
+		const clean = line.replace(/^\s*\[\s*\d+\.\d+\]\s*/, "");
+		let m;
+		if ((m = clean.match(/^pathmask:\s+hooked\s+(\S+)/))) {
+			sum.hookedSymbols.push(m[1]);
+		} else if ((m = clean.match(/^pathmask:\s+skip\s+(\S+)\s+\(disabled\)/))) {
+			sum.skippedSymbols.push(m[1]);
+		} else if ((m = clean.match(/^pathmask:\s+(\w+(?:\s+\w+)?)\s+hook fired \(first time\)/))) {
+			sum.hookFiredFirstTime.push(m[1]);
+		} else if (clean.startsWith("pathmask: loaded -- ")) {
+			sum.loadedLine = clean.replace(/^pathmask:\s+/, "");
+		} else if ((m = clean.match(/^pathmask:\s+target\[\d+\]\s+(.+)/))) {
+			sum.targetLines.push(m[1]);
+		} else if (/pathmask:.*not found|skip/.test(clean) && clean.includes("err=")) {
+			sum.notFoundLines.push(clean.replace(/^pathmask:\s+/, ""));
+		} else if (/disagrees about version of symbol|Unknown symbol|invalid module format|exec format error|module_layout/i.test(clean)) {
+			sum.errorLines.push(clean);
+		}
+	}
+	return sum;
+}
+
+/*
+ * Parse the `--- sysfs parameters ---` block from statusLog into a
+ * { name: value } map. Used by the verdict to spot stale config
+ * (user changed conf but never reloaded; sysfs reflects the last
+ * insmod, not the conf on disk).
+ */
+function parseSysfsParams(statusLog) {
+	const params = {};
+	const lines = (statusLog || "").split(/\r?\n/);
+	let in_section = false;
+	for (const line of lines) {
+		if (line.startsWith("---")) {
+			in_section = line.includes("sysfs parameters");
+			continue;
+		}
+		if (!in_section) continue;
+		const eq = line.indexOf("=");
+		if (eq <= 0) continue;
+		const k = line.slice(0, eq).trim();
+		const v = line.slice(eq + 1).trim();
+		if (k) params[k] = v;
+	}
+	return params;
+}
+
+function secondsAgo(epoch, now) {
+	if (!epoch || !Number.isFinite(epoch) || epoch <= 0) return null;
+	const ref = Number.isFinite(now) && now > 0 ? now : Math.floor(Date.now() / 1000);
+	const diff = ref - epoch;
+	if (diff < 0) return null;
+	if (diff < 60) return `${diff} 秒前`;
+	if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+	if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+	return `${Math.floor(diff / 86400)} 天前`;
+}
+
+// Compare two normalised comma-separated strings irrespective of order
+// and whitespace. "a,b,c" == "c, a, b". Used for stale-config detection.
+function csvEquivalent(a, b) {
+	const norm = (s) => (s || "").split(/[,\s]+/).map((x) => x.trim()).filter(Boolean).sort().join(",");
+	return norm(a) === norm(b);
+}
+
+/*
  * Run all probes as separate small shell calls. Earlier versions
  * tried to do this in one combined shell with a magic separator
  * (`###PMSEP###`), but on at least one OnePlus / OxygenOS WebUI
@@ -791,13 +928,20 @@ async function gatherDiagnosticFacts(snapshot) {
 	const unameR = ok(unameRes);
 	const oem = detectOemKernel(unameR);
 	const kmi = detectKmiFromUname(unameR);
+	const taintInfo = decodeTaint(ok(taintRes));
+	const dmesgSummary = summarizeDmesg(dmesgRaw);
+	const sysfsParams = parseSysfsParams(snapshot.statusLog || "");
 
 	let bootStateName = null;
 	let bootStateDetail = null;
+	let bootStateUpdated = 0;
 	if (snapshot.bootState && snapshot.bootState.state) {
 		bootStateName = snapshot.bootState.state;
 		bootStateDetail = snapshot.bootState.detail || null;
+		bootStateUpdated = Number.parseInt(snapshot.bootState.updated || "0", 10) || 0;
 	}
+	const nowEpoch = snapshot.nowEpoch || Math.floor(Date.now() / 1000);
+	const bootStateAgeStr = secondsAgo(bootStateUpdated, nowEpoch);
 
 	const failCount = Number.parseInt(firstLine(snapshot.loadFailCountText), 10) || 0;
 	const failReason = firstLine(snapshot.loadFailReasonText);
@@ -805,11 +949,51 @@ async function gatherDiagnosticFacts(snapshot) {
 		(snapshot.koInfo || "").includes("No such file");
 	const ksuDisabled = (snapshot.moduleFlags || "").includes("disable");
 
+	// Compare what the user has in conf right now vs what the kernel
+	// is actually running with (pulled from sysfs at insmod time).
+	// Mismatch == "user changed conf but never reloaded". This is one
+	// of the two top false-positive causes of "the module isn't doing
+	// anything" support pings.
+	const confSyscallHooks = (snapshot.syscallHooksText || "")
+		.split(/\r?\n/).map((s) => s.trim()).filter((s) => s && !s.startsWith("#")).join(",");
+	const confEnableSyscallHooks = firstLine(snapshot.enableSyscallHooksText);
+	const confScopeMode = (snapshot.scopeText || "").trim();
+	const confDenyUidsCsv = linesFromText(snapshot.uidText || "").join(",");
+	const confTargets = linesFromText(snapshot.targetText || "");
+	const sysResolvedCount = Number.parseInt(sysfsParams.resolved_count || "-1", 10);
+	const sysScopeMode = sysfsParams.scope_mode || "";
+	const sysSyscallHooks = sysfsParams.syscall_hooks || "";
+	const sysEnableSyscallHooks = sysfsParams.enable_syscall_hooks || "";
+	const sysDenyUidsCsv = sysfsParams.deny_uids || "";
+	const sysTargetPaths = sysfsParams.target_paths || "";
+
+	const stale = {
+		scope: !!moduleLoaded && sysScopeMode && confScopeMode &&
+			sysScopeMode !== confScopeMode,
+		// enable_syscall_hooks is bool: kernel exposes Y/N in sysfs,
+		// conf stores 1/0 (or human variants). Normalise both.
+		enableSyscallHooks: !!moduleLoaded && sysEnableSyscallHooks &&
+			confEnableSyscallHooks &&
+			(sysEnableSyscallHooks === "Y") !== /^(1|true|yes|on)$/i.test(confEnableSyscallHooks),
+		// syscall_hooks string: skip when conf is empty (means "fall
+		// back to enable_syscall_hooks") because sysfs will then echo
+		// the kernel-internal default which differs from "".
+		syscallHooks: !!moduleLoaded && confSyscallHooks &&
+			!csvEquivalent(sysSyscallHooks, confSyscallHooks),
+		denyUids: !!moduleLoaded && confDenyUidsCsv &&
+			!csvEquivalent(sysDenyUidsCsv, confDenyUidsCsv),
+	};
+	const anyStale = stale.scope || stale.enableSyscallHooks ||
+		stale.syscallHooks || stale.denyUids;
+
 	return {
 		moduleLoaded,
 		moduleLine: ourModule || "",
 		bootStateName,
 		bootStateDetail,
+		bootStateUpdated,
+		bootStateAgeStr,
+		nowEpoch,
 		hasBootState: !!(snapshot.bootStateText && snapshot.bootStateText.trim()),
 		failCount,
 		failReason,
@@ -822,10 +1006,18 @@ async function gatherDiagnosticFacts(snapshot) {
 		oem,
 		pageSize: ok(pagesizeRes),
 		selinux: ok(selinuxRes),
-		taint: ok(taintRes),
+		taintInfo,
 		otherLkms,
 		dmesgRaw,
 		dmesgState,
+		dmesgSummary,
+		sysfsParams,
+		sysResolvedCount,
+		confTargetCount: confTargets.length,
+		confSyscallHooks,
+		confEnableSyscallHooks,
+		stale,
+		anyStale,
 	};
 }
 
@@ -840,9 +1032,68 @@ async function gatherDiagnosticFacts(snapshot) {
  */
 function computeVerdict(facts) {
 	if (facts.moduleLoaded) {
+		// Stack of post-loaded checks. Order matters: stale config
+		// dominates over "everything looks fine" because the user
+		// is likely about to ask "I changed conf X but it doesn't
+		// take effect", which we want to answer up-front.
+		if (facts.anyStale) {
+			const which = [];
+			if (facts.stale.scope)              which.push("scope_mode");
+			if (facts.stale.enableSyscallHooks) which.push("enable_syscall_hooks");
+			if (facts.stale.syscallHooks)       which.push("syscall_hooks");
+			if (facts.stale.denyUids)           which.push("deny_uids");
+			return {
+				level: FACT_WARN,
+				headline: `模块在跑，但 conf 已被修改且未热重载（${which.join(", ")}）`,
+				suggestions: [
+					"sysfs 显示的运行参数和 *.conf 不一致；说明你改完 conf 没点「保存并热重载」也没重启。",
+					"用「保存并热重载」让新配置生效，或者重启。",
+				],
+			};
+		}
+		if (facts.confTargetCount > 0 && facts.sysResolvedCount >= 0 &&
+		    facts.sysResolvedCount < facts.confTargetCount) {
+			// Glob lines that legitimately match nothing should not
+			// trigger this warning, but we don't know glob-vs-literal
+			// from this layer. Word it cautiously.
+			return {
+				level: FACT_WARN,
+				headline: `模块在跑，但只解析到 ${facts.sysResolvedCount}/${facts.confTargetCount} 条目标路径`,
+				suggestions: [
+					"剩余路径在加载时不存在，被内核 skip 了。",
+					"看「dmesg pathmask 相关」段里 'not found (err=...)' 行确认是哪一条。",
+					"如果是带 ??? 的 glob 行匹配不到，是预期的（路径未生成）；如果是字面路径，多半拼错了或路径被系统改过。",
+				],
+			};
+		}
+		// Hooks-mounted-but-never-fired warning. If the user
+		// genuinely has zero deny UIDs hitting target paths this is
+		// false-positive friendly, so we only fire it when the
+		// scope is deny + boot_state was old enough that an
+		// access-loop should have happened by now (>5 min).
+		const ageOldEnough = facts.bootStateUpdated > 0 &&
+			(facts.nowEpoch - facts.bootStateUpdated > 300);
+		const denyMode = (facts.sysfsParams.scope_mode || "") === "deny";
+		const denyUidCount = (facts.sysfsParams.deny_uids || "").split(",").filter(Boolean).length;
+		if (denyMode && denyUidCount > 0 && ageOldEnough &&
+		    facts.dmesgState.available &&
+		    facts.dmesgSummary.hookFiredFirstTime.length === 0 &&
+		    facts.dmesgSummary.loadedLine) {
+			return {
+				level: FACT_WARN,
+				headline: "hook 已挂上但从未被任何进程触发",
+				suggestions: [
+					`已经过去 ${facts.bootStateAgeStr || "很久"}，dmesg 里没有任何 'hook fired (first time)' 行。`,
+					"说明 deny 列表里的 UID 实际上从未访问过目标路径，或者它们用了 PathMask 还没覆盖的 syscall。",
+					"如果你期望某个应用被拦截：在 logcat -s pathmask 里搜 hook fired，或者让应用重新启动后重测。",
+				],
+			};
+		}
 		return {
 			level: FACT_OK,
-			headline: "PathMask 正在运行",
+			headline: facts.dmesgSummary.hookFiredFirstTime.length > 0
+				? `PathMask 正在运行（已实战触发：${facts.dmesgSummary.hookFiredFirstTime.join(" + ")}）`
+				: "PathMask 正在运行",
 			suggestions: [
 				"如果实际表现仍异常（被检测到、目标可见），用「校验配置」检查是否所有目标都被解析。",
 			],
@@ -1040,18 +1291,81 @@ function buildKeyFacts(facts) {
 	));
 	if (facts.hasBootState) {
 		const detail = facts.bootStateDetail ? `（detail=${facts.bootStateDetail}）` : "";
+		const age = facts.bootStateAgeStr ? `（${facts.bootStateAgeStr}）` : "";
 		lines.push(fmtFactRow(
 			"开机阶段",
 			facts.bootStateName === "loaded" && facts.moduleLoaded ? FACT_OK :
 				(facts.bootStateName && facts.bootStateName.startsWith("skipped-") ? FACT_WARN :
 					(facts.bootStateName && facts.bootStateName.startsWith("failed-") ? FACT_BAD : FACT_INFO)),
-			`${facts.bootStateName || "?"}${detail}`,
+			`${facts.bootStateName || "?"}${age}${detail}`,
 		));
 	} else {
 		lines.push(fmtFactRow("开机阶段", FACT_BAD, "boot_state 不存在（service.sh 未执行）"));
 	}
 	const failLevel = facts.failCount >= 3 ? FACT_BAD : facts.failCount > 0 ? FACT_WARN : FACT_OK;
 	lines.push(fmtFactRow("失败计数", failLevel, `${facts.failCount} / 3${facts.failReason ? ` (${facts.failReason})` : ""}`));
+
+	// Resolved-vs-configured target count: this is the single most
+	// useful "did the kernel actually accept all my targets" signal.
+	// Only emit when the module is loaded; if it isn't, sysfs is
+	// stale or empty so the comparison is meaningless.
+	if (facts.moduleLoaded && facts.confTargetCount > 0 && facts.sysResolvedCount >= 0) {
+		const matched = facts.sysResolvedCount === facts.confTargetCount;
+		lines.push(fmtFactRow(
+			"路径解析",
+			matched ? FACT_OK : FACT_WARN,
+			`内核解析 ${facts.sysResolvedCount} / 配置 ${facts.confTargetCount}${matched ? "" : "（部分路径加载时不存在被 skip）"}`,
+		));
+	}
+
+	// Hook fired: shows whether any deny UID has actually triggered
+	// our hooks since boot. Empty list on a freshly-loaded module is
+	// fine; empty list 5+ minutes after load is suspicious.
+	if (facts.moduleLoaded && facts.dmesgState.available) {
+		const fired = facts.dmesgSummary.hookFiredFirstTime || [];
+		const hooked = facts.dmesgSummary.hookedSymbols || [];
+		const skipped = facts.dmesgSummary.skippedSymbols || [];
+		if (fired.length > 0) {
+			lines.push(fmtFactRow(
+				"hook 命中",
+				FACT_OK,
+				`已实战触发：${fired.join(", ")}`,
+			));
+		} else if (hooked.length > 0) {
+			lines.push(fmtFactRow(
+				"hook 命中",
+				FACT_INFO,
+				`挂载 ${hooked.length} 个，但 dmesg 中尚未见任何 'fired (first time)' 行（开机不久或 deny UID 未访问目标）`,
+			));
+		}
+		if (skipped.length > 0) {
+			lines.push(fmtFactRow(
+				"主动跳过的 hook",
+				FACT_INFO,
+				skipped.join(", "),
+			));
+		}
+	}
+
+	// Stale-config indicators: each stale flag gets its own line so
+	// the user can see precisely which knob is out of sync.
+	if (facts.moduleLoaded && facts.anyStale) {
+		const labels = {
+			scope:               "scope_mode",
+			enableSyscallHooks:  "enable_syscall_hooks",
+			syscallHooks:        "syscall_hooks",
+			denyUids:            "deny_uids",
+		};
+		for (const [key, label] of Object.entries(labels)) {
+			if (!facts.stale[key]) continue;
+			lines.push(fmtFactRow(
+				`stale: ${label}`,
+				FACT_WARN,
+				"conf 已修改但内核仍在用旧值（点「保存并热重载」）",
+			));
+		}
+	}
+
 	const otherCount = facts.otherLkms.length;
 	const otherSummary = otherCount === 0
 		? "无"
@@ -1064,6 +1378,52 @@ function buildKeyFacts(facts) {
 	return lines.join("\n");
 }
 
+/*
+ * Render the parsed dmesgSummary into a structured block instead of
+ * dumping the 80 raw grep lines. The raw block is appended at the
+ * bottom for completeness, but the grouped summary is what users /
+ * developers will actually read.
+ */
+function buildDmesgSection(summary, raw) {
+	if (!summary) return raw || "(dmesg 中没有 pathmask 相关行)";
+	const out = [];
+	if (summary.loadedLine) {
+		out.push("[load summary]");
+		out.push("  " + summary.loadedLine);
+	}
+	if (summary.targetLines.length) {
+		out.push("[target inodes]");
+		for (const t of summary.targetLines) out.push("  " + t);
+	}
+	if (summary.hookedSymbols.length) {
+		out.push("[hooked symbols]");
+		out.push("  " + summary.hookedSymbols.join(", "));
+	}
+	if (summary.skippedSymbols.length) {
+		out.push("[skipped symbols (disabled by user)]");
+		out.push("  " + summary.skippedSymbols.join(", "));
+	}
+	if (summary.hookFiredFirstTime.length) {
+		out.push("[hook fired (first time)]");
+		out.push("  " + summary.hookFiredFirstTime.join(", "));
+	}
+	if (summary.notFoundLines.length) {
+		out.push("[paths not found at insmod]");
+		for (const l of summary.notFoundLines) out.push("  " + l);
+	}
+	if (summary.errorLines.length) {
+		out.push("[errors / kernel rejection]");
+		for (const l of summary.errorLines) out.push("  " + l);
+	}
+	if (out.length === 0) {
+		return raw && raw.trim() ? raw : "(dmesg 中没有 pathmask 相关行)";
+	}
+	out.push("");
+	out.push("--- raw dmesg pathmask 相关 ---");
+	out.push(raw && raw.trim() ? raw : "(空)");
+	return out.join("\n");
+}
+
 function buildKernelEnv(facts) {
 	const lines = [];
 	lines.push(fmtFactRow("内核版本", FACT_INFO, facts.unameR || "(读不到 uname -r)"));
@@ -1071,11 +1431,19 @@ function buildKernelEnv(facts) {
 		lines.push(fmtFactRow("内核 KMI", FACT_INFO, `${facts.kmi}（请确认安装的 zip 也是这个 KMI）`));
 	}
 	if (facts.oem) {
-		lines.push(fmtFactRow(
-			"OEM 后缀",
-			FACT_WARN,
-			`${facts.oem.tag}（${facts.oem.vendor}）— OEM 改过 GKI，CRC 偶尔会不兼容；如果 dmesg 报 disagrees about version of symbol，需要换 SukiSU / KernelPatch 或自编内核`,
-		));
+		// Only elevate to ⚠ when there's actual evidence of CRC
+		// trouble in dmesg (or when the module is failed-to-load
+		// and we have no dmesg to check). On a working install
+		// "abogki" / "oneplus" / etc. is harmless, and pinning a
+		// permanent ⚠ on every OnePlus user's report just trains
+		// them to ignore warnings.
+		const dmesgHasCrcError = (facts.dmesgSummary && facts.dmesgSummary.errorLines &&
+			facts.dmesgSummary.errorLines.length > 0);
+		const elevate = !facts.moduleLoaded && (dmesgHasCrcError || !facts.dmesgState.available);
+		const oemMessage = elevate
+			? `${facts.oem.tag}（${facts.oem.vendor}）— OEM 改过 GKI；dmesg 可见 CRC / unknown symbol 错误，多半就是这里不兼容。换 SukiSU / KernelPatch 或自编内核试试`
+			: `${facts.oem.tag}（${facts.oem.vendor}）— OEM 改过 GKI，CRC 理论上可能不兼容，但当前模块跑得正常`;
+		lines.push(fmtFactRow("OEM 后缀", elevate ? FACT_WARN : FACT_INFO, oemMessage));
 	}
 	if (facts.pageSize) {
 		lines.push(fmtFactRow(
@@ -1087,14 +1455,25 @@ function buildKernelEnv(facts) {
 	if (facts.selinux) {
 		lines.push(fmtFactRow("SELinux", FACT_INFO, facts.selinux));
 	}
-	if (facts.taint) {
-		lines.push(fmtFactRow("内核污染位", facts.taint === "0" ? FACT_OK : FACT_INFO, facts.taint));
+	if (facts.taintInfo) {
+		lines.push(fmtFactRow(
+			"内核污染位",
+			facts.taintInfo.value === 0 ? FACT_OK : FACT_INFO,
+			facts.taintInfo.pretty,
+		));
 	}
 	lines.push(fmtFactRow(
 		"dmesg 权限",
 		facts.dmesgState.available ? FACT_OK : FACT_WARN,
 		facts.dmesgState.available ? "可读" : facts.dmesgState.reason,
 	));
+	if (facts.dmesgSummary && facts.dmesgSummary.errorLines.length > 0) {
+		lines.push(fmtFactRow(
+			"内核拒绝信号",
+			FACT_BAD,
+			`dmesg 含 ${facts.dmesgSummary.errorLines.length} 行 CRC / unknown symbol / invalid module 错误，看下方 dmesg 段获取具体行`,
+		));
+	}
 	return lines.join("\n");
 }
 
@@ -1134,7 +1513,7 @@ function buildReport(snapshot = lastSnapshot) {
 		"",
 		"=== dmesg pathmask 相关 ===",
 		facts.dmesgState.available
-			? (facts.dmesgRaw || "(dmesg 中没有 pathmask 相关行)")
+			? buildDmesgSection(facts.dmesgSummary, facts.dmesgRaw)
 			: `(dmesg 不可读：${facts.dmesgState.reason})`,
 		"",
 		"=== 原始数据 ===",
@@ -1259,6 +1638,7 @@ async function refreshConfig() {
 		uidText,
 		waitText,
 		enableSyscallHooksText,
+		syscallHooksText,
 		bootStateText,
 		bootState: parseBootState(bootStateText),
 		nowEpoch: Number.parseInt((nowText || "0").trim(), 10) || 0,
