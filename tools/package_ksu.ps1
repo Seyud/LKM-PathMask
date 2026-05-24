@@ -72,6 +72,22 @@ Copy-Item -Path (Join-Path $TemplateDir "*") -Destination $StageDir -Recurse -Fo
 Copy-Item -LiteralPath $KoPath -Destination (Join-Path $StageDir "pathmask.ko") -Force
 
 $ModulePropPath = Join-Path $StageDir "module.prop"
+
+# If the caller didn't pass -UpdateJson, derive a default from the
+# ko filename's KMI prefix so module.prop always has the field. KSU
+# manager treats absence of `updateJson=` as "module never publishes
+# updates", which silently breaks the in-app update prompt -- worth
+# defaulting to the canonical raw URL even for ad-hoc local builds,
+# since it points at main and adapts as soon as the next release
+# lands. To opt out, pass -UpdateJson "" explicitly.
+if (-not $PSBoundParameters.ContainsKey('UpdateJson')) {
+    $KoBase = [System.IO.Path]::GetFileNameWithoutExtension($KoPath)
+    if ($KoBase -match '^(android\d+-\d+\.\d+)_pathmask$') {
+        $KmiTag = $Matches[1]
+        $UpdateJson = "https://raw.githubusercontent.com/Andrea-lyz/LKM-PathMask/main/update/${KmiTag}.json"
+    }
+}
+
 if ($UpdateJson.Trim()) {
     $ModulePropLines = Get-Content -LiteralPath $ModulePropPath -Encoding UTF8 |
         Where-Object { $_ -notmatch "^updateJson=" }

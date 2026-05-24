@@ -35,6 +35,27 @@ KO_PATH="${1:-kernel/pathmask.ko}"
 OUTPUT="${2:-out/pathmask-ksu.zip}"
 UPDATE_JSON_URL="${UPDATE_JSON_URL:-}"
 
+# If the caller didn't set UPDATE_JSON_URL, derive one from the ko
+# filename's KMI prefix so the resulting zip always advertises an
+# update channel. KSU manager skips update detection entirely when
+# `updateJson=` is missing from module.prop, which silently breaks
+# in-app updates for ad-hoc local builds. To opt out, set
+# UPDATE_JSON_URL='' (already the default fallback path); to skip
+# entirely, set NO_UPDATE_JSON=1.
+if [ -z "$UPDATE_JSON_URL" ] && [ -z "${NO_UPDATE_JSON:-}" ]; then
+	KO_BASE=$(basename "$KO_PATH" .ko)
+	case "$KO_BASE" in
+		android*_pathmask)
+			KMI_TAG="${KO_BASE%_pathmask}"
+			case "$KMI_TAG" in
+				android*-[0-9]*.[0-9]*)
+					UPDATE_JSON_URL="https://raw.githubusercontent.com/Andrea-lyz/LKM-PathMask/main/update/${KMI_TAG}.json"
+					;;
+			esac
+			;;
+	esac
+fi
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 TEMPLATE_DIR="$REPO_ROOT/ksu-module"
